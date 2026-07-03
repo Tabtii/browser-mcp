@@ -29,20 +29,21 @@ VERSION = "0.1.0"
 class WebSocketFrame:
     @staticmethod
     def encode(data: str) -> bytes:
+        """Encode a server-to-browser WebSocket text frame.
+
+        Per RFC 6455, client-to-server frames MUST be masked, but
+        server-to-client frames MUST NOT be masked. Browser clients close the
+        connection with a protocol error if the server masks outbound frames.
+        """
         payload = data.encode("utf-8")
-        mask_bit = 0x80
         payload_len = len(payload)
         if payload_len < 126:
-            header = bytes([0x81, payload_len | mask_bit])
+            header = bytes([0x81, payload_len])
         elif payload_len < 65536:
-            header = bytes([0x81, 126 | mask_bit]) + struct.pack(">H", payload_len)
+            header = bytes([0x81, 126]) + struct.pack(">H", payload_len)
         else:
-            header = bytes([0x81, 127 | mask_bit]) + struct.pack(">Q", payload_len)
-        mask = os.urandom(4)
-        masked = bytearray(payload)
-        for i in range(len(masked)):
-            masked[i] ^= mask[i % 4]
-        return header + mask + masked
+            header = bytes([0x81, 127]) + struct.pack(">Q", payload_len)
+        return header + payload
 
     @staticmethod
     def decode(data: bytes) -> str:
