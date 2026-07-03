@@ -498,8 +498,23 @@ async function executeTool(toolName, args) {
     case "evaluate": {
       const results = await chrome.scripting.executeScript({
         target: { tabId: tab.id },
-        func: (script) => { try { return String(eval(script)); } catch(e) { return `Error: ${e.message}`; } },
-        args: [args.script]
+        func: (script) => {
+          try {
+            // Use Function constructor instead of eval — bypasses CSP 'unsafe-eval'
+            const fn = new Function("return (" + script + ")");
+            return String(fn());
+          } catch(e) {
+            // Try as expression if Function fails
+            try {
+              const fn2 = new Function(script);
+              return String(fn2());
+            } catch(e2) {
+              return `Error: ${e2.message}`;
+            }
+          }
+        },
+        args: [args.script],
+        world: "MAIN"
       });
       return { content: [{ type: "text", text: results[0]?.result || "undefined" }] };
     }
@@ -914,15 +929,33 @@ async function executeTool(toolName, args) {
       const results = await chrome.scripting.executeScript({
         target: { tabId: tab.id },
         func: (searchText, isPartial) => {
-          const els = document.querySelectorAll("button, a, [role='button'], input[type='submit'], [onclick], label, span, div");
-          for (const el of els) {
-            const elText = (el.textContent || "").trim();
-            if (!elText) continue;
-            const match = isPartial ? elText.toLowerCase().includes(searchText.toLowerCase()) : elText.toLowerCase() === searchText.toLowerCase();
-            if (match) {
-              el.click();
-              return `Clicked: "${elText.substring(0, 60)}"`;
+          // Search most specific elements first (a, button) then generic (div, span)
+          const selectors = ["button", "a", "[role='button']", "input[type='submit']", "[onclick]", "label", "span", "div"];
+          const searchTextLower = searchText.toLowerCase();
+          let bestMatch = null;
+          let bestScore = Infinity;
+          for (const sel of selectors) {
+            const els = document.querySelectorAll(sel);
+            for (const el of els) {
+              const elText = (el.textContent || "").trim();
+              if (!elText) continue;
+              const match = isPartial
+                ? elText.toLowerCase().includes(searchTextLower)
+                : elText.toLowerCase() === searchTextLower;
+              if (match) {
+                // Prefer shorter text (more specific element)
+                const score = elText.length;
+                if (score < bestScore) {
+                  bestScore = score;
+                  bestMatch = el;
+                }
+              }
             }
+            if (bestMatch && bestScore <= searchText.length + 20) break;
+          }
+          if (bestMatch) {
+            bestMatch.click();
+            return `Clicked: "${(bestMatch.textContent || "").trim().substring(0, 60)}"`;
           }
           return `No element found with text: "${searchText}"`;
         },
@@ -988,7 +1021,7 @@ async function executeTool(toolName, args) {
           }
           return `Dialog handler set: ${act}${txt ? ` (text: "${txt}")` : ""}`;
         },
-        args: [action, dialogText]
+        args: [action, dialogText || ""]
       });
       return { content: [{ type: "text", text: results[0]?.result }] };
     }

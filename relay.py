@@ -23,7 +23,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 
 MCP_PORT = 9275
 WS_PORT = 9274  # WebSocket port for extension connection
-VERSION = "0.1.0"
+VERSION = "0.4.0"
 
 # ─── WebSocket Server (hand-rolled, zero deps) ───
 
