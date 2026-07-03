@@ -100,4 +100,68 @@ document.addEventListener("DOMContentLoaded", () => {
 
   const jsonConfig = document.getElementById("jsonConfig");
   if (jsonConfig) jsonConfig.addEventListener("click", copyJson);
+
+  // ─── Pro License UI ───
+  const activateBtn = document.getElementById("activateBtn");
+  const deactivateBtn = document.getElementById("deactivateBtn");
+  const licenseInput = document.getElementById("licenseInput");
+  const proBadge = document.getElementById("proBadge");
+  const proStatus = document.getElementById("proStatus");
+
+  // Check current license status on popup open
+  chrome.runtime.sendMessage({ type: "GET_LICENSE_STATUS" }, (response) => {
+    if (response && response.valid) {
+      showProActive();
+    }
+  });
+
+  function showProActive() {
+    proBadge.textContent = "Pro ✓";
+    proBadge.className = "pro-badge pro-badge-active";
+    proStatus.textContent = "All 35 tools unlocked. Thank you for supporting BrowserMCP!";
+    proStatus.style.color = "#52B788";
+    licenseInput.style.display = "none";
+    activateBtn.style.display = "none";
+    deactivateBtn.style.display = "block";
+  }
+
+  function showProError(msg) {
+    proStatus.textContent = msg;
+    proStatus.style.color = "#E55934";
+  }
+
+  if (activateBtn) {
+    activateBtn.addEventListener("click", () => {
+      const key = licenseInput.value.trim().toUpperCase();
+      if (!key) {
+        showProError("Please enter a license key");
+        return;
+      }
+      activateBtn.textContent = "Validating...";
+      chrome.runtime.sendMessage({ type: "ACTIVATE_LICENSE", key }, (response) => {
+        if (response && response.valid) {
+          showProActive();
+        } else {
+          showProError("Invalid license key. Please check and try again.");
+          activateBtn.textContent = "Activate Pro";
+        }
+      });
+    });
+  }
+
+  if (deactivateBtn) {
+    deactivateBtn.addEventListener("click", () => {
+      chrome.runtime.sendMessage({ type: "DEACTIVATE_LICENSE" }, () => {
+        proBadge.textContent = "Free";
+        proBadge.className = "pro-badge";
+        proStatus.textContent = "Unlock 10 advanced tools: highlight, wait_for_element, get_interactive_elements, click_by_id, type_by_id, click_text, hover, drag_and_drop, handle_dialog, get_markdown";
+        proStatus.style.color = "#8A9B91";
+        licenseInput.style.display = "block";
+        licenseInput.value = "";
+        activateBtn.style.display = "block";
+        activateBtn.textContent = "Activate Pro";
+        deactivateBtn.style.display = "none";
+      });
+    });
+  }
 });

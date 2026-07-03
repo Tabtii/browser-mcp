@@ -5,11 +5,103 @@
 // ═══════════════════════════════════════════════════════════
 
 const MCP_PORT = 9275;
-const MCP_VERSION = "0.1.0";
+const MCP_VERSION = "0.4.0";
 let wsServer = null;
 let wsClients = new Set();
 let isRunning = false;
 let connectedAgent = null;
+
+// ─── Pro License System ───
+// Pro tools require a valid license key. Keys are validated offline.
+// Key format: BMCP-XXXX-XXXX-XXXX-XXXX
+// Validation: SHA-256(key parts + secret) must end with specific suffix
+const PRO_SECRET = "bmcp_2024_pro_salt";
+const PRO_TOOLS = new Set([
+  "highlight", "wait_for_element", "get_interactive_elements",
+  "click_by_id", "type_by_id", "click_text", "hover",
+  "drag_and_drop", "handle_dialog", "get_markdown"
+]);
+
+let proLicenseKey = null;
+let proLicenseValid = false;
+
+// Load saved license on startup
+chrome.storage.local.get(["proLicenseKey"], async (result) => {
+  if (result.proLicenseKey) {
+    proLicenseKey = result.proLicenseKey;
+    proLicenseValid = await validateLicense(result.proLicenseKey);
+    console.log(`[BrowserMCP] License loaded: ${proLicenseValid ? "Pro ✓" : "Invalid"}`);
+  }
+});
+
+async function sha256(text) {
+  const data = new TextEncoder().encode(text);
+  const hash = await crypto.subtle.digest("SHA-256", data);
+  return Array.from(new Uint8Array(hash))
+    .map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function validateLicense(key) {
+  // Key format: BMCP-XXXX-XXXX-XXXX-XXXX
+  if (!key || !key.startsWith("BMCP-")) return false;
+  const parts = key.split("-");
+  if (parts.length !== 5) return false;
+  // Validate: hash the key + secret and check if result starts with specific hex prefix
+  // "cafe" = 4 hex chars = 1/65536 chance, brute-forceable in keygen
+  const hash = await sha256(key + "|" + PRO_SECRET);
+  return hash.startsWith("cafe");
+}
+
+async function isProEnabled() {
+  return proLicenseValid;
+}
+
+async function activateLicense(key) {
+  const valid = await validateLicense(key);
+  if (valid) {
+    proLicenseKey = key;
+    proLicenseValid = true;
+    await chrome.storage.local.set({ proLicenseKey: key });
+  }
+  return valid;
+}
+
+async function deactivateLicense() {
+  proLicenseKey = null;
+  proLicenseValid = false;
+  await chrome.storage.local.remove("proLicenseKey");
+}
+
+// Generate a license key (for the seller — not included in public extension)
+// Run in console: generateLicenseKey() to create a new valid key
+async function generateLicenseKey() {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // No I,O,0,1
+  let key = "BMCP";
+  for (let i = 0; i < 4; i++) {
+    let segment = "";
+    for (let j = 0; j < 4; j++) {
+      segment += chars[Math.floor(Math.random() * chars.length)];
+    }
+    key += "-" + segment;
+  }
+  // Check if this key validates
+  const hash = await sha256(key + "|" + PRO_SECRET);
+  if (hash.startsWith("cafe")) return key;
+  // Otherwise, brute-force the last segment to find a valid key
+  // This is a simple approach — in production, use a keygen script
+  for (const c1 of chars) {
+    for (const c2 of chars) {
+      for (const c3 of chars) {
+        for (const c4 of chars) {
+          const testKey = key.substring(0, key.length - 4) + c1 + c2 + c3 + c4;
+          const h = await sha256(testKey + "|" + PRO_SECRET);
+          if (h.startsWith("cafe")) return testKey;
+        }
+      }
+    }
+  }
+  return null;
+}
 
 // ─── MCP Tool Definitions ───
 const MCP_TOOLS = [
@@ -223,9 +315,14 @@ async function handleMcpRequest(message) {
         };
         break;
 
-      case "tools/list":
-        result = { tools: MCP_TOOLS };
+      case "tools/list": {
+        const proEnabled = await isProEnabled();
+        const tools = proEnabled
+          ? MCP_TOOLS
+          : MCP_TOOLS.filter(t => !PRO_TOOLS.has(t.name));
+        result = { tools };
         break;
+      }
 
       case "tools/call":
         result = await executeTool(params.name, params.arguments || {});
@@ -250,6 +347,14 @@ async function handleMcpRequest(message) {
 
 // ─── Tool Execution ───
 async function executeTool(toolName, args) {
+  // Pro tool gating
+  if (PRO_TOOLS.has(toolName)) {
+    const proEnabled = await isProEnabled();
+    if (!proEnabled) {
+      throw new Error(`Tool "${toolName}" requires BrowserMCP Pro. Get a license at https://github.com/Tabtii/browser-mcp#pro-license`);
+    }
+  }
+
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab && !["get_tabs", "switch_tab", "close_tab"].includes(toolName)) {
     throw new Error("No active tab found");
@@ -1085,6 +1190,26 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   if (msg.type === "STOP_SERVER") {
     stopServer().then(() => sendResponse({ ok: true }));
+    return true;
+  }
+
+  // ─── Pro License Messages ───
+  if (msg.type === "GET_LICENSE_STATUS") {
+    sendResponse({ valid: proLicenseValid, key: proLicenseKey });
+    return false;
+  }
+
+  if (msg.type === "ACTIVATE_LICENSE") {
+    activateLicense(msg.key).then(valid => {
+      sendResponse({ valid, key: msg.key });
+    });
+    return true;
+  }
+
+  if (msg.type === "DEACTIVATE_LICENSE") {
+    deactivateLicense().then(() => {
+      sendResponse({ ok: true });
+    });
     return true;
   }
 });

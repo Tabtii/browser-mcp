@@ -139,6 +139,63 @@
     font-size: 11px;
     color: #6B7B72;
   }
+  .pro-section {
+    margin: 16px;
+    background: #1A221E;
+    border-radius: 16px;
+    padding: 16px;
+  }
+  .pro-badge {
+    display: inline-block;
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 6px;
+    background: #E8A33D;
+    color: #0F1512;
+    font-weight: 700;
+    margin-left: 6px;
+    vertical-align: middle;
+  }
+  .pro-badge-active {
+    background: #52B788;
+  }
+  .pro-badge-locked {
+    background: #6B7B72;
+  }
+  .pro-input {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid #2A3A32;
+    border-radius: 8px;
+    background: #0F1512;
+    color: #E2E9E5;
+    font-size: 13px;
+    font-family: 'Courier New', monospace;
+    margin-bottom: 8px;
+    box-sizing: border-box;
+  }
+  .pro-input:focus {
+    outline: none;
+    border-color: #52B788;
+  }
+  .pro-status {
+    font-size: 12px;
+    color: #8A9B91;
+    margin-bottom: 8px;
+  }
+  .pro-tools-list {
+    font-size: 11px;
+    color: #8A9B91;
+    margin-top: 8px;
+    line-height: 1.6;
+  }
+  .pro-tools-list span {
+    color: #E8A33D;
+  }
+  .btn-secondary {
+    background: #2A3A32;
+    color: #E2E9E5;
+  }
 </style>
 </head>
 <body>
@@ -222,8 +279,19 @@
   </div>
 </div>
 
+<div class="pro-section" id="proSection">
+  <h3>⭐ BrowserMCP Pro <span class="pro-badge" id="proBadge">Free</span></h3>
+  <div class="pro-status" id="proStatus">Unlock 10 advanced tools: highlight, wait_for_element, get_interactive_elements, click_by_id, type_by_id, click_text, hover, drag_and_drop, handle_dialog, get_markdown</div>
+  <input type="text" class="pro-input" id="licenseInput" placeholder="BMCP-XXXX-XXXX-XXXX-XXXX" />
+  <button class="btn btn-primary" id="activateBtn">Activate Pro</button>
+  <button class="btn btn-secondary" id="deactivateBtn" style="display:none;">Deactivate</button>
+  <div class="pro-tools-list" id="proToolsInfo">
+    <span>Pro Tools:</span> highlight, wait_for_element, get_interactive_elements, click_by_id, type_by_id, click_text, hover, drag_and_drop, handle_dialog, get_markdown
+  </div>
+</div>
+
 <div class="footer">
-  BrowserMCP v0.3.0 · 35 Tools · Zero-setup · No npm
+  BrowserMCP v0.4.0 · 35 Tools · Zero-setup · No npm
 </div>
 
 <script src="popup.js"></script>
