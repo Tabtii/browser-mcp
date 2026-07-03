@@ -329,7 +329,7 @@ class StatusHandler(BaseHTTPRequestHandler):
 
 
 def start_http_status():
-    server = HTTPServer(("127.0.0.1", MCP_PORT), StatusHandler)
+    server = HTTPServer(("0.0.0.0", MCP_PORT), StatusHandler)
     server.serve_forever()
 
 
@@ -358,6 +358,11 @@ if __name__ == "__main__":
 
     try:
         handle_stdio()
-    except KeyboardInterrupt:
-        print("\n[BrowerMCP] Shutting down.", file=sys.stderr)
+    except (KeyboardInterrupt, SystemExit):
+        print("\n[BrowserMCP] Shutting down.", file=sys.stderr)
         sys.exit(0)
+
+    # If handle_stdio() returns (stdin EOF), keep server alive for HTTP/WebSocket clients
+    print("[BrowserMCP] stdio ended, keeping HTTP/WebSocket server alive...", file=sys.stderr)
+    import signal
+    signal.pause()

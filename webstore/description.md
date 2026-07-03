@@ -1,58 +1,49 @@
 # BrowserMCP — AI Browser Control via MCP
 
-## Verleihen Sie KI-Agenten die Kontrolle über Ihren Browser
+## Give AI agents control over your browser
 
-BrowserMCP verwandelt Chrome in einen MCP-Server (Model Context Protocol). Verbinden Sie KI-Agenten wie Claude, Cursor oder jeden anderen MCP-Client direkt mit Ihrem Browser — ganz ohne npm, ohne Bridge-Prozess, ohne zusätzliche Abhängigkeiten.
+BrowserMCP turns Chrome into an MCP server (Model Context Protocol). Connect AI agents like Claude, Cursor, or any MCP client directly to your browser — no npm, no bridge process, no dependencies.
 
-### So funktioniert es
+### How it works
 
-1. **Extension installieren** — Laden Sie BrowserMCP als entpackte Erweiterung
-2. **Relay starten** — `python3 relay.py` (Python 3 ist auf macOS/Linux vorinstalliert)
-3. **AI-Agent verbinden** — MCP-Config einfügen, fertig
-4. **Start klicken** — Das BrowserMCP-Icon → Start
+1. **Install extension** — Load unpacked in `chrome://extensions/`
+2. **Start relay** — `python3 relay.py` (Python 3 is pre-installed on macOS/Linux)
+3. **Connect AI agent** — Add MCP config, done
+4. **Click Start** — BrowserMCP icon → Start
 
-### 16 MCP-Tools inklusive
+### 35 MCP Tools
 
-| Tool | Beschreibung |
-|---|---|
-| `navigate` | Zu einer URL navigieren |
-| `screenshot` | Sichtbaren Tab-Bereich erfassen |
-| `get_dom` | Vereinfachten Accessibility-Tree extrahieren |
-| `click` | Element per CSS-Selector klicken |
-| `type_text` | Text in Formularfelder eingeben |
-| `extract_text` | Text-Inhalte von Seite/Selektor abrufen |
-| `scroll` | Seite hoch/herunter scrollen |
-| `get_tabs` | Alle offenen Tabs auflisten |
-| `switch_tab` | Zu einem bestimmten Tab wechseln |
-| `close_tab` | Tab per ID schließen |
-| `evaluate` | JavaScript in der Seite ausführen |
-| `get_page_info` | Titel, URL, Viewport-Größe abrufen |
-| `fill_form` | Mehrere Formularfelder gleichzeitig ausfüllen |
-| `wait` | N Millisekunden warten |
-| `press_key` | Tastatureingabe simulieren |
-| `get_links` | Alle Links einer Seite extrahieren |
+**Core:** navigate, screenshot, get_dom, click, type_text, extract_text, scroll, get_tabs, switch_tab, close_tab, evaluate, get_page_info, fill_form, wait, press_key, get_links
 
-### Warum BrowserMCP?
+**Advanced:** start_recording, stop_recording, playback, detect_forms, auto_fill_form, create_tab, batch_execute, get_console_logs, get_network_requests
 
-- **Zero-Setup** — Kein npm, kein Node.js, kein pip. Nur `python3 relay.py`
-- **Ihre echte Sitzung** — Nutzt Ihre angemeldeten Tabs, nicht einen sauberen Browser
-- **100% lokal** — Alle Verarbeitung passiert auf Ihrem Rechner. Keine Telemetrie, keine Analytics, keine Cloud
-- **Minimal & schnell** — ~50KB Extension + 10KB Relay. Keine 300MB+ Browser-Binaries
-- **Offener Standard** — Basiert auf dem Model Context Protocol (MCP)
+**Pro:** highlight, wait_for_element, get_interactive_elements, click_by_id, type_by_id, click_text, hover, drag_and_drop, handle_dialog, get_markdown
 
-### Datenschutz
+### Why BrowserMCP?
 
-BrowserMCP überträgt **keine Daten an externe Server**. Der Relay lauscht ausschließlich auf `localhost`. Sämtliche Browser-Interaktion findet lokal über WebSocket auf `127.0.0.1` statt. Es gibt keine Telemetrie, kein Tracking und keine Analytics.
+- **Zero-Setup** — No npm, no Node.js, no pip. Just `python3 relay.py`
+- **Your real session** — Uses your logged-in tabs, not a clean browser
+- **100% local** — All processing on your machine. No telemetry, no analytics, no cloud
+- **Minimal & fast** — ~50KB extension + 13KB relay. No 300MB+ browser binaries
+- **Open standard** — Built on the Model Context Protocol (MCP)
+- **Recording/Playback** — Record browser actions and replay them
+- **Batch Execute** — Run multiple tool calls in a single request
+- **Network Capture** — Monitor all network requests in real-time
+- **Markdown Export** — Convert any page to clean structured Markdown
 
-### Voraussetzungen
+### Privacy
 
-- Google Chrome (oder Chromium-basierter Browser mit Manifest V3-Unterstützung)
-- Python 3.x (auf macOS/Linux vorinstalliert; Windows: kleiner Download)
-- Ein MCP-fähiger AI-Client (Cursor, Claude Desktop, etc.)
+BrowserMCP transfers **no data to external servers**. The relay listens exclusively on `localhost`. All browser interaction happens locally via WebSocket on `127.0.0.1`. No telemetry, no tracking, no analytics.
 
-### Konfiguration
+### Requirements
 
-Fügen Sie dies zu Ihrer MCP-Client-Konfiguration hinzu:
+- Google Chrome (or Chromium-based browser with Manifest V3 support)
+- Python 3.x (pre-installed on macOS/Linux; Windows: small download)
+- An MCP-capable AI client (Cursor, Claude Desktop, Hermes, etc.)
+
+### Configuration
+
+Add this to your MCP client config:
 
 ```json
 {
@@ -65,19 +56,19 @@ Fügen Sie dies zu Ihrer MCP-Client-Konfiguration hinzu:
 }
 ```
 
-### Architektur
+### Architecture
 
 ```
-AI-Agent (Claude/Cursor)
+AI Agent (Claude / Cursor / Hermes)
     ↕ stdio (JSON-RPC)
 relay.py (Python, zero deps)
-    ↕ WebSocket (ws://localhost:9274)
+    ↕ WebSocket (ws://127.0.0.1:9274)
 Chrome Extension (offscreen document)
     ↕ chrome.scripting API
 Browser Tab
 ```
 
-### Lizenz
+### License
 
 MIT — Open Source
 
