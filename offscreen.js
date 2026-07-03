@@ -50,15 +50,21 @@ function connectToRelay() {
     };
 
     ws.onclose = () => {
-      console.log("[BrowserMCP] Disconnected from relay. Reconnecting in 3s...");
+      console.log("[BrowserMCP] Disconnected from relay. Reconnecting in 2s...");
       connected = false;
       chrome.runtime.sendMessage({ type: "CLIENT_DISCONNECTED", clientId: "extension" });
-      setTimeout(() => {
-        // Only reconnect if server is still running
+      // Auto-reconnect with exponential backoff
+      let retryDelay = 2000;
+      const maxDelay = 30000;
+      const retry = () => {
         chrome.runtime.sendMessage({ type: "GET_STATUS" }, (status) => {
-          if (status?.running) connectToRelay();
+          if (status?.running) {
+            setTimeout(() => connectToRelay(), Math.min(retryDelay, maxDelay));
+            retryDelay = Math.min(retryDelay * 1.5, maxDelay);
+          }
         });
-      }, 3000);
+      };
+      retry();
     };
 
     ws.onerror = (err) => {

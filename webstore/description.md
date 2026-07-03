@@ -11,7 +11,7 @@ BrowserMCP verwandelt Chrome in einen MCP-Server (Model Context Protocol). Verbi
 3. **AI-Agent verbinden** — MCP-Config einfügen, fertig
 4. **Start klicken** — Das BrowserMCP-Icon → Start
 
-### 24 MCP-Tools inklusive
+### 16 MCP-Tools inklusive
 
 | Tool | Beschreibung |
 |---|---|
@@ -31,14 +31,6 @@ BrowserMCP verwandelt Chrome in einen MCP-Server (Model Context Protocol). Verbi
 | `wait` | N Millisekunden warten |
 | `press_key` | Tastatureingabe simulieren |
 | `get_links` | Alle Links einer Seite extrahieren |
-| `start_recording` | Browser-Aktionen aufzeichnen |
-| `stop_recording` | Aufzeichnung stoppen + als JSON exportieren |
-| `playback` | Aufgezeichnete Aktionen wiedergeben |
-| `detect_forms` | Alle Formulare mit Feldern auto-erkennen |
-| `auto_fill_form` | Formular mit KI-Werten ausfüllen |
-| `create_tab` | Neuen Tab öffnen |
-| `batch_execute` | Mehrere Tool-Calls nacheinander ausführen |
-| `get_console_logs` | Console-Logs der Seite abrufen |
 
 ### Warum BrowserMCP?
 

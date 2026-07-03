@@ -140,6 +140,57 @@ const MCP_TOOLS = [
     name: "get_network_requests",
     description: "Capture recent network requests from the active tab (URL, method, status, type)",
     inputSchema: { type: "object", properties: { filter: { type: "string", default: "" } } }
+  },
+  // ─── Phase 1: Quick Wins ───
+  {
+    name: "highlight",
+    description: "Visually highlight an element with a colored border. Pass a CSS selector. Pass duration=0 to remove all highlights.",
+    inputSchema: { type: "object", properties: { selector: { type: "string" }, color: { type: "string", default: "#E55934" }, duration: { type: "number", default: 3000 } }, required: ["selector"] }
+  },
+  {
+    name: "wait_for_element",
+    description: "Wait until an element matching the CSS selector appears on the page. Auto-resolves when found or after timeout.",
+    inputSchema: { type: "object", properties: { selector: { type: "string" }, timeout: { type: "number", default: 10000 }, visible: { type: "boolean", default: true } }, required: ["selector"] }
+  },
+  {
+    name: "get_interactive_elements",
+    description: "List all interactive elements (buttons, links, inputs, selects) with numeric IDs. Use the returned ID with click_by_id or type_by_id.",
+    inputSchema: { type: "object", properties: { filter: { type: "string", enum: ["all", "buttons", "links", "inputs", "forms"], default: "all" } } }
+  },
+  {
+    name: "click_by_id",
+    description: "Click an element by its interactive ID (from get_interactive_elements). Much easier than CSS selectors.",
+    inputSchema: { type: "object", properties: { elementId: { type: "number" } }, required: ["elementId"] }
+  },
+  {
+    name: "type_by_id",
+    description: "Type text into the element with the given interactive ID (from get_interactive_elements).",
+    inputSchema: { type: "object", properties: { elementId: { type: "number" }, text: { type: "string" } }, required: ["elementId", "text"] }
+  },
+  {
+    name: "click_text",
+    description: "Click an element by its visible text content. e.g. click_text({text: 'Submit'}). Searches buttons, links, and all visible elements.",
+    inputSchema: { type: "object", properties: { text: { type: "string" }, partial: { type: "boolean", default: true } }, required: ["text"] }
+  },
+  {
+    name: "hover",
+    description: "Hover over an element by CSS selector. Triggers mouseenter/mouseover events.",
+    inputSchema: { type: "object", properties: { selector: { type: "string" } }, required: ["selector"] }
+  },
+  {
+    name: "drag_and_drop",
+    description: "Drag an element from a source selector to a target selector. Uses HTML5 drag events.",
+    inputSchema: { type: "object", properties: { source: { type: "string" }, target: { type: "string" } }, required: ["source", "target"] }
+  },
+  {
+    name: "handle_dialog",
+    description: "Accept or dismiss a JavaScript dialog (alert, confirm, prompt). Also can type text into a prompt.",
+    inputSchema: { type: "object", properties: { action: { type: "string", enum: ["accept", "dismiss"], default: "accept" }, text: { type: "string" } } }
+  },
+  {
+    name: "get_markdown",
+    description: "Convert the current page content to structured Markdown. Headings, lists, tables, links, and code blocks are preserved semantically.",
+    inputSchema: { type: "object", properties: { selector: { type: "string", default: "body" }, max_length: { type: "number", default: 10000 } } }
   }
 ];
 
@@ -600,6 +651,307 @@ async function executeTool(toolName, args) {
         args: [filterStr]
       });
       return { content: [{ type: "text", text: JSON.stringify(results[0]?.result || [], null, 2) }] };
+    }
+
+    // ─── Phase 1: Quick Wins ───
+
+    case "highlight": {
+      const { selector, color = "#E55934", duration = 3000 } = args;
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: (sel, col, dur) => {
+          // Remove existing highlights
+          document.querySelectorAll("[data-mcp-highlight]").forEach(el => {
+            el.style.outline = el.dataset.mcpPrevOutline || "";
+            delete el.dataset.mcpHighlight;
+            delete el.dataset.mcpPrevOutline;
+          });
+          if (dur === 0) return "Highlights removed";
+
+          const el = document.querySelector(sel);
+          if (!el) return `Element not found: ${sel}`;
+          el.dataset.mcpPrevOutline = el.style.outline || "";
+          el.dataset.mcpHighlight = "true";
+          el.style.outline = `3px solid ${col}`;
+          el.style.outlineOffset = "2px";
+          el.scrollIntoView({ behavior: "smooth", block: "center" });
+
+          if (dur > 0) {
+            setTimeout(() => {
+              el.style.outline = el.dataset.mcpPrevOutline || "";
+              delete el.dataset.mcpHighlight;
+              delete el.dataset.mcpPrevOutline;
+            }, dur);
+          }
+          return `Highlighted: ${sel}`;
+        },
+        args: [selector, color, duration]
+      });
+      return { content: [{ type: "text", text: results[0]?.result }] };
+    }
+
+    case "wait_for_element": {
+      const { selector, timeout = 10000, visible = true } = args;
+      const startTime = Date.now();
+      while (Date.now() - startTime < timeout) {
+        const results = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: (sel, vis) => {
+            const el = document.querySelector(sel);
+            if (!el) return false;
+            if (!vis) return true;
+            const rect = el.getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0 && getComputedStyle(el).visibility !== "hidden";
+          },
+          args: [selector, visible]
+        });
+        if (results[0]?.result) {
+          return { content: [{ type: "text", text: `Element found: ${selector} (waited ${Date.now() - startTime}ms)` }] };
+        }
+        await new Promise(r => setTimeout(r, 200));
+      }
+      return { content: [{ type: "text", text: `Timeout: Element "${selector}" not found after ${timeout}ms` }] };
+    }
+
+    case "get_interactive_elements": {
+      const filter = args.filter || "all";
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: (flt) => {
+          let elements = [];
+          const selectors = {
+            all: "button, a[href], input, select, textarea, [role='button'], [onclick], [tabindex]",
+            buttons: "button, [role='button'], input[type='submit'], input[type='button'], [onclick]",
+            links: "a[href]",
+            inputs: "input, select, textarea",
+            forms: "form"
+          };
+          const els = document.querySelectorAll(selectors[flt] || selectors.all);
+          els.forEach((el, idx) => {
+            const rect = el.getBoundingClientRect();
+            if (rect.width === 0 && rect.height === 0) return;
+            const text = (el.textContent || el.value || el.placeholder || el.getAttribute("aria-label") || "").trim().substring(0, 60);
+            const tag = el.tagName.toLowerCase();
+            const type = el.type || el.getAttribute("role") || "";
+            const id = el.id ? `#${el.id}` : "";
+            const name = el.name ? `[name="${el.name}"]` : "";
+            const cls = el.className ? `.${String(el.className).split(" ")[0]}` : "";
+            const selector = id || name || (cls ? `${tag}${cls}` : `${tag}:nth-of-type(1)`);
+            elements.push({
+              id: idx,
+              tag, type, text, selector,
+              position: { x: Math.round(rect.x), y: Math.round(rect.y), w: Math.round(rect.width), h: Math.round(rect.height) }
+            });
+          });
+          return elements.slice(0, 100);
+        },
+        args: [filter]
+      });
+      return { content: [{ type: "text", text: JSON.stringify(results[0]?.result || [], null, 2) }] };
+    }
+
+    case "click_by_id": {
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: (id) => {
+          const selectors = "button, a[href], input, select, textarea, [role='button'], [onclick], [tabindex]";
+          const els = document.querySelectorAll(selectors);
+          let count = 0;
+          for (const el of els) {
+            const rect = el.getBoundingClientRect();
+            if (rect.width === 0 && rect.height === 0) continue;
+            if (count === id) { el.click(); return `Clicked element #${id}: ${(el.textContent || el.value || "").trim().substring(0, 40)}`; }
+            count++;
+          }
+          return `Element #${id} not found`;
+        },
+        args: [args.elementId]
+      });
+      return { content: [{ type: "text", text: results[0]?.result }] };
+    }
+
+    case "type_by_id": {
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: (id, text) => {
+          const selectors = "button, a[href], input, select, textarea, [role='button'], [onclick], [tabindex]";
+          const els = document.querySelectorAll(selectors);
+          let count = 0;
+          for (const el of els) {
+            const rect = el.getBoundingClientRect();
+            if (rect.width === 0 && rect.height === 0) continue;
+            if (count === id) {
+              el.focus();
+              el.value = text;
+              el.dispatchEvent(new Event("input", { bubbles: true }));
+              el.dispatchEvent(new Event("change", { bubbles: true }));
+              return `Typed "${text}" into element #${id}`;
+            }
+            count++;
+          }
+          return `Element #${id} not found`;
+        },
+        args: [args.elementId, args.text]
+      });
+      return { content: [{ type: "text", text: results[0]?.result }] };
+    }
+
+    case "click_text": {
+      const { text, partial = true } = args;
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: (searchText, isPartial) => {
+          const els = document.querySelectorAll("button, a, [role='button'], input[type='submit'], [onclick], label, span, div");
+          for (const el of els) {
+            const elText = (el.textContent || "").trim();
+            if (!elText) continue;
+            const match = isPartial ? elText.toLowerCase().includes(searchText.toLowerCase()) : elText.toLowerCase() === searchText.toLowerCase();
+            if (match) {
+              el.click();
+              return `Clicked: "${elText.substring(0, 60)}"`;
+            }
+          }
+          return `No element found with text: "${searchText}"`;
+        },
+        args: [text, partial]
+      });
+      return { content: [{ type: "text", text: results[0]?.result }] };
+    }
+
+    case "hover": {
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: (sel) => {
+          const el = document.querySelector(sel);
+          if (!el) return `Element not found: ${sel}`;
+          const events = ["mouseenter", "mouseover", "mousemove", "hover"];
+          for (const type of events) {
+            el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+          }
+          el.scrollIntoView({ behavior: "smooth", block: "center" });
+          return `Hovered: ${sel}`;
+        },
+        args: [args.selector]
+      });
+      return { content: [{ type: "text", text: results[0]?.result }] };
+    }
+
+    case "drag_and_drop": {
+      const { source, target } = args;
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: (srcSel, tgtSel) => {
+          const src = document.querySelector(srcSel);
+          const tgt = document.querySelector(tgtSel);
+          if (!src) return `Source not found: ${srcSel}`;
+          if (!tgt) return `Target not found: ${tgtSel}`;
+          const dragStart = new DragEvent("dragstart", { bubbles: true, cancelable: true });
+          const dragOver = new DragEvent("dragover", { bubbles: true, cancelable: true });
+          const drop = new DragEvent("drop", { bubbles: true, cancelable: true });
+          const dragEnd = new DragEvent("dragend", { bubbles: true, cancelable: true });
+          src.dispatchEvent(dragStart);
+          tgt.dispatchEvent(dragOver);
+          tgt.dispatchEvent(drop);
+          src.dispatchEvent(dragEnd);
+          return `Dragged ${srcSel} → ${tgtSel}`;
+        },
+        args: [source, target]
+      });
+      return { content: [{ type: "text", text: results[0]?.result }] };
+    }
+
+    case "handle_dialog": {
+      const { action = "accept", text: dialogText } = args;
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: (act, txt) => {
+          window.__mcpDialogAction = act;
+          window.__mcpDialogText = txt || "";
+          if (!window.__mcpDialogOverridden) {
+            window.__mcpDialogOverridden = true;
+            window.alert = () => {};
+            window.confirm = () => act === "accept";
+            window.prompt = (msg, def) => txt || def || "";
+          }
+          return `Dialog handler set: ${act}${txt ? ` (text: "${txt}")` : ""}`;
+        },
+        args: [action, dialogText]
+      });
+      return { content: [{ type: "text", text: results[0]?.result }] };
+    }
+
+    case "get_markdown": {
+      const { selector = "body", max_length = 10000 } = args;
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: (sel, maxLen) => {
+          const el = sel === "body" ? document.body : document.querySelector(sel);
+          if (!el) return "Element not found";
+
+          function toMarkdown(node, depth = 0) {
+            let md = "";
+            for (const child of node.childNodes) {
+              if (child.nodeType === 3) { // Text node
+                const text = child.textContent.trim();
+                if (text) md += text + " ";
+              } else if (child.nodeType === 1) {
+                const tag = child.tagName.toLowerCase();
+                switch (tag) {
+                  case "h1": md += `\n# ${child.textContent.trim()}\n\n`; break;
+                  case "h2": md += `\n## ${child.textContent.trim()}\n\n`; break;
+                  case "h3": md += `\n### ${child.textContent.trim()}\n\n`; break;
+                  case "h4": md += `\n#### ${child.textContent.trim()}\n\n`; break;
+                  case "h5": md += `\n##### ${child.textContent.trim()}\n\n`; break;
+                  case "h6": md += `\n###### ${child.textContent.trim()}\n\n`; break;
+                  case "p": md += `\n${toMarkdown(child)}\n\n`; break;
+                  case "a": md += `[${child.textContent.trim()}](${child.href})`; break;
+                  case "img": md += `![${child.alt || ""}](${child.src})`; break;
+                  case "ul": case "ol":
+                    md += "\n";
+                    for (const li of child.children) {
+                      md += `${tag === "ol" ? "1." : "-"} ${li.textContent.trim()}\n`;
+                    }
+                    md += "\n";
+                    break;
+                  case "table":
+                    const rows = child.querySelectorAll("tr");
+                    if (rows.length > 0) {
+                      const headers = Array.from(rows[0].querySelectorAll("th,td")).map(c => c.textContent.trim());
+                      md += `\n| ${headers.join(" | ")} |\n| ${headers.map(() => "---").join(" | ")} |\n`;
+                      for (let i = 1; i < rows.length; i++) {
+                        const cells = Array.from(rows[i].querySelectorAll("td,th")).map(c => c.textContent.trim());
+                        md += `| ${cells.join(" | ")} |\n`;
+                      }
+                      md += "\n";
+                    }
+                    break;
+                  case "pre":
+                    md += `\n\`\`\`\n${child.textContent.trim()}\n\`\`\`\n\n`;
+                    break;
+                  case "code":
+                    md += `\`${child.textContent.trim()}\``;
+                    break;
+                  case "blockquote":
+                    md += `\n> ${child.textContent.trim()}\n\n`;
+                    break;
+                  case "br": md += "\n"; break;
+                  case "hr": md += "\n---\n\n"; break;
+                  case "div": case "section": case "article": case "main": case "header": case "footer": case "nav":
+                    md += toMarkdown(child, depth + 1); break;
+                  default: md += toMarkdown(child, depth); break;
+                }
+              }
+            }
+            return md;
+          }
+
+          let result = toMarkdown(el);
+          if (result.length > maxLen) result = result.substring(0, maxLen) + "\n\n[... truncated]";
+          return result;
+        },
+        args: [selector, max_length]
+      });
+      return { content: [{ type: "text", text: results[0]?.result || "Empty" }] };
     }
 
     default:
