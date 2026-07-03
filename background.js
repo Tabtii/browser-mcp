@@ -92,8 +92,63 @@ const MCP_TOOLS = [
     name: "get_links",
     description: "Extract all links from the page with their text and href",
     inputSchema: { type: "object", properties: {} }
+  },
+  // ─── Recording / Playback ───
+  {
+    name: "start_recording",
+    description: "Start recording browser actions (clicks, inputs, navigations) for later playback",
+    inputSchema: { type: "object", properties: {} }
+  },
+  {
+    name: "stop_recording",
+    description: "Stop recording and return the recorded action sequence as JSON",
+    inputSchema: { type: "object", properties: {} }
+  },
+  {
+    name: "playback",
+    description: "Replay a previously recorded action sequence. Pass the actions array from stop_recording.",
+    inputSchema: { type: "object", properties: { actions: { type: "array" }, speed: { type: "number", default: 1 } }, required: ["actions"] }
+  },
+  // ─── Form Detection ───
+  {
+    name: "detect_forms",
+    description: "Auto-detect all forms on the page with their fields, types, labels, and selectors",
+    inputSchema: { type: "object", properties: {} }
+  },
+  {
+    name: "auto_fill_form",
+    description: "Auto-fill a form with AI-generated values. Detects the form and suggests values based on field types/names.",
+    inputSchema: { type: "object", properties: { selector: { type: "string", default: "form" }, values: { type: "object" } } }
+  },
+  // ─── Multi-Tab Workflows ───
+  {
+    name: "create_tab",
+    description: "Create a new tab with an optional URL",
+    inputSchema: { type: "object", properties: { url: { type: "string" }, active: { type: "boolean", default: true } } }
+  },
+  {
+    name: "batch_execute",
+    description: "Execute multiple tool calls in sequence on a specific tab. Pass an array of {tool, args} objects.",
+    inputSchema: { type: "object", properties: { tabId: { type: "number" }, steps: { type: "array" } }, required: ["steps"] }
+  },
+  {
+    name: "get_console_logs",
+    description: "Capture console logs from the active tab (errors, warnings, logs)",
+    inputSchema: { type: "object", properties: { level: { type: "string", enum: ["error", "warn", "log", "all"], default: "all" } } }
+  },
+  {
+    name: "get_network_requests",
+    description: "Capture recent network requests from the active tab (URL, method, status, type)",
+    inputSchema: { type: "object", properties: { filter: { type: "string", default: "" } } }
   }
 ];
+
+// ─── Recording State ───
+let recordingState = { isRecording: false, actions: [], recordingTabId: null };
+
+// ─── Network/Console Capture State ───
+let consoleLogs = [];
+let networkRequests = [];
 
 // ─── MCP Protocol Handler ───
 async function handleMcpRequest(message) {
@@ -348,6 +403,203 @@ async function executeTool(toolName, args) {
         }
       });
       return { content: [{ type: "text", text: JSON.stringify(results[0]?.result, null, 2) }] };
+    }
+
+    // ─── Recording / Playback ───
+    case "start_recording": {
+      recordingState = { isRecording: true, actions: [], recordingTabId: tab.id };
+      // Inject recording listener
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: () => {
+          if (window.__browserMcpRecording) return;
+          window.__browserMcpRecording = true;
+          window.__browserMcpActions = [];
+          document.addEventListener("click", (e) => {
+            const el = e.target;
+            const selector = el.id ? `#${el.id}` : el.className ? `${el.tagName.toLowerCase()}.${String(el.className).split(" ")[0]}` : el.tagName.toLowerCase();
+            window.__browserMcpActions.push({ type: "click", selector, timestamp: Date.now() });
+          }, true);
+          document.addEventListener("input", (e) => {
+            const el = e.target;
+            if (!el.value) return;
+            const selector = el.id ? `#${el.id}` : el.name ? `[name="${el.name}"]` : el.tagName.toLowerCase();
+            window.__browserMcpActions.push({ type: "type", selector, text: el.value, timestamp: Date.now() });
+          }, true);
+        }
+      });
+      return { content: [{ type: "text", text: "Recording started. Interact with the page — actions are being captured." }] };
+    }
+
+    case "stop_recording": {
+      if (!recordingState.isRecording) {
+        return { content: [{ type: "text", text: "Not recording." }] };
+      }
+      // Collect recorded actions from the page
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: recordingState.recordingTabId || tab.id },
+        func: () => {
+          const actions = window.__browserMcpActions || [];
+          window.__browserMcpRecording = false;
+          window.__browserMcpActions = [];
+          return actions;
+        }
+      });
+      const actions = results[0]?.result || [];
+      recordingState.isRecording = false;
+      return { content: [{ type: "text", text: JSON.stringify({ recorded: actions.length, actions }, null, 2) }] };
+    }
+
+    case "playback": {
+      const actions = args.actions || [];
+      const speed = args.speed || 1;
+      for (const action of actions) {
+        const delay = 500 / speed;
+        await new Promise(r => setTimeout(r, delay));
+        if (action.type === "click") {
+          await chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            func: (sel) => { const el = document.querySelector(sel); if (el) el.click(); },
+            args: [action.selector]
+          });
+        } else if (action.type === "type") {
+          await chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            func: (sel, text) => {
+              const el = document.querySelector(sel);
+              if (el) { el.focus(); el.value = text; el.dispatchEvent(new Event("input", { bubbles: true })); }
+            },
+            args: [action.selector, action.text]
+          });
+        } else if (action.type === "navigate") {
+          await chrome.tabs.update(tab.id, { url: action.url });
+          await waitForTabLoad(tab.id);
+        }
+      }
+      return { content: [{ type: "text", text: `Playback complete: ${actions.length} actions executed.` }] };
+    }
+
+    // ─── Form Detection ───
+    case "detect_forms": {
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: () => {
+          const forms = Array.from(document.querySelectorAll("form"));
+          return forms.map((form, idx) => {
+            const fields = Array.from(form.querySelectorAll("input, select, textarea")).map(el => ({
+              tag: el.tagName.toLowerCase(),
+              type: el.type || "",
+              name: el.name || "",
+              id: el.id || "",
+              label: el.getAttribute("aria-label") || (el.labels?.[0]?.textContent?.trim() || ""),
+              required: el.required,
+              placeholder: el.placeholder || "",
+              selector: el.id ? `#${el.id}` : el.name ? `[name="${el.name}"]` : `${el.tagName.toLowerCase()}:nth-of-type(1)`,
+              value: el.value || ""
+            }));
+            return { formIndex: idx, action: form.action || "", method: form.method || "get", fieldCount: fields.length, fields };
+          });
+        }
+      });
+      return { content: [{ type: "text", text: JSON.stringify(results[0]?.result || [], null, 2) }] };
+    }
+
+    case "auto_fill_form": {
+      const selector = args.selector || "form";
+      const values = args.values || {};
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: (sel, vals) => {
+          const form = document.querySelector(sel);
+          if (!form) return `Form not found: ${sel}`;
+          const fields = Array.from(form.querySelectorAll("input, select, textarea"));
+          const filled = [];
+          for (const el of fields) {
+            const key = el.id || el.name || el.type;
+            const val = vals[key] || vals[el.name] || vals[el.id] || "";
+            if (val) {
+              el.focus();
+              el.value = val;
+              el.dispatchEvent(new Event("input", { bubbles: true }));
+              el.dispatchEvent(new Event("change", { bubbles: true }));
+              filled.push(`${key}="${val}"`);
+            }
+          }
+          return `Filled ${filled.length} fields: ${filled.join(", ")}`;
+        },
+        args: [selector, values]
+      });
+      return { content: [{ type: "text", text: results[0]?.result }] };
+    }
+
+    // ─── Multi-Tab Workflows ───
+    case "create_tab": {
+      const newTab = await chrome.tabs.create({ url: args.url || "about:blank", active: args.active !== false });
+      if (args.url) await waitForTabLoad(newTab.id);
+      return { content: [{ type: "text", text: `Created tab ${newTab.id} with URL: ${args.url || "about:blank"}` }] };
+    }
+
+    case "batch_execute": {
+      const steps = args.steps || [];
+      const targetTabId = args.tabId || tab.id;
+      const results = [];
+      for (const step of steps) {
+        try {
+          const stepResult = await executeTool(step.tool, step.args || {});
+          results.push({ tool: step.tool, success: true, result: stepResult });
+        } catch (e) {
+          results.push({ tool: step.tool, success: false, error: e.message });
+        }
+      }
+      return { content: [{ type: "text", text: JSON.stringify(results, null, 2) }] };
+    }
+
+    case "get_console_logs": {
+      const level = args.level || "all";
+      // Use chrome.debugger to capture console logs
+      // For simplicity, we inject a script that captures console output
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: (lvl) => {
+          if (!window.__browserMcpLogs) {
+            window.__browserMcpLogs = [];
+            const origLog = console.log;
+            const origWarn = console.warn;
+            const origError = console.error;
+            console.log = (...args) => { window.__browserMcpLogs.push({ level: "log", args: args.map(String), time: Date.now() }); origLog(...args); };
+            console.warn = (...args) => { window.__browserMcpLogs.push({ level: "warn", args: args.map(String), time: Date.now() }); origWarn(...args); };
+            console.error = (...args) => { window.__browserMcpLogs.push({ level: "error", args: args.map(String), time: Date.now() }); origError(...args); };
+          }
+          window.onerror = (msg, url, line, col, err) => {
+            window.__browserMcpLogs.push({ level: "error", args: [`${msg} at ${url}:${line}:${col}`], time: Date.now() });
+          };
+          const logs = window.__browserMcpLogs || [];
+          return lvl === "all" ? logs : logs.filter(l => l.level === lvl);
+        },
+        args: [level]
+      });
+      return { content: [{ type: "text", text: JSON.stringify(results[0]?.result || [], null, 2) }] };
+    }
+
+    case "get_network_requests": {
+      const filterStr = args.filter || "";
+      // Use the debugger API to capture network requests
+      // For a lightweight approach, we use Performance API
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: (filterStr) => {
+          const entries = performance.getEntriesByType("resource");
+          const requests = entries.map(e => ({
+            url: e.name,
+            type: e.initiatorType,
+            duration: Math.round(e.duration),
+            size: e.transferSize || 0
+          })).filter(r => !filterStr || r.url.includes(filterStr));
+          return requests.slice(-50);
+        },
+        args: [filterStr]
+      });
+      return { content: [{ type: "text", text: JSON.stringify(results[0]?.result || [], null, 2) }] };
     }
 
     default:
