@@ -974,12 +974,10 @@ function waitForTabLoad(tabId) {
 }
 
 // ─── WebSocket MCP Server (via offscreen document) ───
-async function startServer() {
-  if (isRunning) return;
+async function ensureOffscreenDocument() {
+  const hasDocument = await chrome.offscreen.hasDocument();
+  if (hasDocument) return;
 
-  // Use chrome.offscreen API to create a WebSocket server
-  // Since service workers can't open WebSocket servers directly,
-  // we use an offscreen document
   try {
     await chrome.offscreen.createDocument({
       url: "offscreen.html",
@@ -989,22 +987,26 @@ async function startServer() {
       reasons: ["WORKERS"],
       justification: "Persistent WebSocket client for MCP browser control relay"
     });
-    isRunning = true;
-
-    chrome.runtime.sendMessage({ type: "START_MCP_SERVER", port: MCP_PORT });
-
-    chrome.storage.local.set({ mcpRunning: true, mcpPort: MCP_PORT });
   } catch (e) {
-    // If already exists, just restart
-    if (e.message && e.message.includes("existing")) {
+    // Offscreen creation races can throw if another start just created it.
+    if (e.message && e.message.includes("existing")) return;
+    throw e;
+  }
+}
+
+async function startServer() {
+  try {
+    await ensureOffscreenDocument();
+    isRunning = true;
+    await chrome.storage.local.set({ mcpRunning: true, mcpPort: MCP_PORT });
+
+    // Give the offscreen document a tiny moment to register its listener.
+    setTimeout(() => {
       chrome.runtime.sendMessage({ type: "START_MCP_SERVER", port: MCP_PORT });
-      isRunning = true;
-      chrome.storage.local.set({ mcpRunning: true, mcpPort: MCP_PORT });
-    } else {
-      console.error("[BrowserMCP] Failed to start:", e);
-      // Send error back to popup
-      chrome.runtime.sendMessage({ type: "START_ERROR", error: e.message });
-    }
+    }, 100);
+  } catch (e) {
+    console.error("[BrowserMCP] Failed to start:", e);
+    chrome.runtime.sendMessage({ type: "START_ERROR", error: e.message || String(e) });
   }
 }
 
@@ -1058,8 +1060,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === "GET_STATUS") {
-    sendResponse({ running: isRunning, port: MCP_PORT, clients: wsClients.size });
-    return false;
+    Promise.all([
+      chrome.storage.local.get(["mcpRunning"]),
+      chrome.offscreen.hasDocument().catch(() => false)
+    ]).then(([stored, hasOffscreen]) => {
+      const running = Boolean(isRunning || stored.mcpRunning || hasOffscreen);
+      sendResponse({ running, port: MCP_PORT, clients: wsClients.size, hasOffscreen });
+    });
+    return true;
   }
 
   if (msg.type === "START_SERVER") {
@@ -1074,7 +1082,22 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 });
 
 // ─── Extension install ───
-chrome.runtime.onInstalled.addListener(() => {
-  chrome.storage.local.set({ mcpRunning: false, mcpPort: null, agentConnected: false, autoStart: false });
-  console.log("[BrowserMCP] Extension installed. MCP server ready to start.");
+chrome.runtime.onInstalled.addListener((details) => {
+  if (details.reason === "install") {
+    chrome.storage.local.set({ mcpRunning: false, mcpPort: null, agentConnected: false, autoStart: false });
+  }
+  console.log(`[BrowserMCP] Extension ${details.reason}. MCP server ready to start.`);
+});
+
+// Restore running state when Chrome wakes/restarts the MV3 service worker.
+// Without this, closing the popup can let Chrome suspend the worker and lose
+// the in-memory `isRunning` flag, causing offscreen reconnect logic to stop.
+chrome.runtime.onStartup.addListener(async () => {
+  const stored = await chrome.storage.local.get(["mcpRunning"]);
+  if (stored.mcpRunning) await startServer();
+});
+
+chrome.runtime.onSuspend.addListener(() => {
+  // Do not stop the offscreen document here. It owns the persistent WebSocket.
+  console.log("[BrowserMCP] Service worker suspended; offscreen stays active.");
 });
