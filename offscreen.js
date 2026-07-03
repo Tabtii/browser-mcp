@@ -5,7 +5,10 @@
 // ═══════════════════════════════════════════════════════════
 
 let ws = null;
-const RELAY_WS_URL = "ws://localhost:9274";
+// Use explicit IPv4 loopback. Some Chrome/offscreen contexts resolve
+// localhost inconsistently (IPv6 ::1 vs 127.0.0.1), while relay.py
+// binds to 127.0.0.1.
+const RELAY_WS_URL = "ws://127.0.0.1:9274";
 let connected = false;
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {

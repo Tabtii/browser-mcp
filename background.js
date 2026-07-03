@@ -983,8 +983,11 @@ async function startServer() {
   try {
     await chrome.offscreen.createDocument({
       url: "offscreen.html",
-      reasons: ["WEB_SOCKETS"],
-      justification: "MCP WebSocket server for AI browser control"
+      // Chrome MV3 offscreen reasons do not include WEB_SOCKETS.
+      // WORKERS is the closest valid reason for a persistent offscreen
+      // context that owns the relay WebSocket client.
+      reasons: ["WORKERS"],
+      justification: "Persistent WebSocket client for MCP browser control relay"
     });
     isRunning = true;
 
@@ -993,12 +996,14 @@ async function startServer() {
     chrome.storage.local.set({ mcpRunning: true, mcpPort: MCP_PORT });
   } catch (e) {
     // If already exists, just restart
-    if (e.message.includes("existing")) {
+    if (e.message && e.message.includes("existing")) {
       chrome.runtime.sendMessage({ type: "START_MCP_SERVER", port: MCP_PORT });
       isRunning = true;
       chrome.storage.local.set({ mcpRunning: true, mcpPort: MCP_PORT });
     } else {
       console.error("[BrowserMCP] Failed to start:", e);
+      // Send error back to popup
+      chrome.runtime.sendMessage({ type: "START_ERROR", error: e.message });
     }
   }
 }

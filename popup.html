@@ -165,18 +165,18 @@
     <span class="status-value" id="agentStatus">Nicht verbunden</span>
   </div>
 
-  <button class="btn btn-primary" id="startBtn" onclick="toggleServer()">
+  <button class="btn btn-primary" id="startBtn">
     Start
   </button>
 </div>
 
 <div class="config-section">
   <div class="config-label">MCP Client Konfiguration (Cursor / Claude)</div>
-  <div class="config-value" onclick="copyConfig()" id="configText">
+  <div class="config-value" id="configText">
     python3 relay.py
   </div>
   <div class="config-label">JSON Config (für Cursor / Claude)</div>
-  <div class="config-value" onclick="copyJson()" id="jsonConfig">
+  <div class="config-value" id="jsonConfig">
 { "mcpServers": { "browser-mcp": { "command": "python3", "args": ["relay.py"] } } }
   </div>
 </div>

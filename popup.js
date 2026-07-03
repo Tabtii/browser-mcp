@@ -87,3 +87,17 @@ function flashCopied(id) {
   el.style.background = "#2D6A4F";
   setTimeout(() => { el.style.background = original; }, 500);
 }
+
+// ═══════════════════════════════════════════════════════════
+// Event Listeners (CSP-safe — no inline handlers)
+// ═══════════════════════════════════════════════════════════
+document.addEventListener("DOMContentLoaded", () => {
+  const startBtn = document.getElementById("startBtn");
+  if (startBtn) startBtn.addEventListener("click", toggleServer);
+
+  const configText = document.getElementById("configText");
+  if (configText) configText.addEventListener("click", copyConfig);
+
+  const jsonConfig = document.getElementById("jsonConfig");
+  if (jsonConfig) jsonConfig.addEventListener("click", copyJson);
+});
