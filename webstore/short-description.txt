@@ -1,1 +1,1 @@
-Machen Sie Chrome zum MCP-Server. 16 Tools: navigieren, klicken, Screenshots, DOM, Formulare. 100% lokal. Zero npm.
+Machen Sie Chrome zum MCP-Server. 24 Tools: navigieren, klicken, Screenshots, DOM, Formulare, Recording. 100% lokal. Zero npm.
