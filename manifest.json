@@ -1,7 +1,7 @@
 {
   "name": "BrowserMCP — AI Browser Control via MCP",
   "version": "0.4.0",
-  "description": "Turn Chrome into an MCP server. Let AI agents control your browser: navigate, click, fill forms, extract content, take screenshots. Zero setup — no npm, no bridge process.",
+  "description": "Turn Chrome into an MCP server. AI agents control your browser: navigate, click, type, screenshot. Zero setup.",
   "manifest_version": 3,
   "permissions": [
     "activeTab",
@@ -9,7 +9,6 @@
     "scripting",
     "storage",
     "debugger",
-    "notifications",
     "offscreen"
   ],
   "host_permissions": ["<all_urls>"],
