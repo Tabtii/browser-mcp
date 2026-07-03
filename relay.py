@@ -18,6 +18,7 @@ import struct
 import hashlib
 import base64
 import os
+import queue
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 MCP_PORT = 9275
@@ -102,6 +103,8 @@ class ExtensionClient:
 
 extension_client = None
 extension_lock = threading.Lock()
+pending_responses = {}
+pending_lock = threading.Lock()
 
 
 def handle_extension_connection(conn, addr):
@@ -138,16 +141,24 @@ def handle_extension_connection(conn, addr):
     with extension_lock:
         extension_client = client
 
-    # Listen for responses from extension and forward to stdout
+    # Listen for responses from extension. If an HTTP /mcp request is waiting
+    # for this JSON-RPC id, deliver it there; otherwise forward to stdout for
+    # classic stdio MCP clients.
     while client.alive:
         msg = client.recv()
         if msg:
-            # Forward to stdout for MCP client
             try:
                 parsed = json.loads(msg)
+                msg_id = parsed.get("id")
+                if msg_id is not None:
+                    with pending_lock:
+                        pending = pending_responses.get(msg_id)
+                    if pending:
+                        pending.put(parsed)
+                        continue
                 sys.stdout.write(json.dumps(parsed) + "\n")
                 sys.stdout.flush()
-            except:
+            except Exception:
                 pass
 
     print("[BrowserMCP] Extension disconnected", file=sys.stderr)
@@ -171,35 +182,40 @@ def start_ws_server():
 
 # ─── stdio MCP handler ───
 
-def forward_to_extension(msg: dict) -> dict:
-    """Forward an MCP request to the extension via WebSocket and wait for response."""
+def call_extension_sync(msg: dict, timeout: float = 30.0) -> dict:
+    """Forward an MCP request to the extension and wait for its JSON-RPC response."""
+    msg_id = msg.get("id")
+    if msg_id is None:
+        msg_id = int(time.time() * 1000)
+        msg["id"] = msg_id
+
     with extension_lock:
-        if not extension_client or not extension_client.alive:
+        client = extension_client if extension_client and extension_client.alive else None
+    if not client:
+        return {
+            "jsonrpc": "2.0", "id": msg_id,
+            "error": {"code": -32000, "message": "Browser extension not connected. Open BrowserMCP and click Start."}
+        }
+
+    response_queue = queue.Queue(maxsize=1)
+    with pending_lock:
+        pending_responses[msg_id] = response_queue
+    try:
+        if not client.send(json.dumps(msg)):
             return {
-                "jsonrpc": "2.0", "id": msg.get("id"),
-                "error": {"code": -32000, "message": "Browser extension not connected. Install the BrowserMCP extension and ensure it's running."}
+                "jsonrpc": "2.0", "id": msg_id,
+                "error": {"code": -32001, "message": "Failed to send request to BrowserMCP extension."}
             }
-
-    extension_client.send(json.dumps(msg))
-
-    # Wait for response (with timeout)
-    # The response will be read by the extension listener thread and written to stdout
-    # But in stdio mode, we need to read it synchronously
-    # This is a simplified approach: we read from the extension directly
-    start = time.time()
-    while time.time() - start < 30:
-        with extension_lock:
-            if extension_client and extension_client.alive:
-                # The listener thread handles forwarding to stdout
-                # We just wait
-                time.sleep(0.05)
-        # Check if a response appeared on stdin
-        # Actually — in this architecture, the extension responses go to stdout
-        # directly from the listener thread. So we just need to not block here.
-        # The relay just passes everything through.
-        break
-
-    return None  # Response is forwarded directly to stdout
+        try:
+            return response_queue.get(timeout=timeout)
+        except queue.Empty:
+            return {
+                "jsonrpc": "2.0", "id": msg_id,
+                "error": {"code": -32002, "message": f"Timeout waiting for BrowserMCP response after {timeout}s."}
+            }
+    finally:
+        with pending_lock:
+            pending_responses.pop(msg_id, None)
 
 
 def handle_stdio():
@@ -275,6 +291,38 @@ class StatusHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(json.dumps(status, indent=2).encode())
+
+    def do_POST(self):
+        if self.path != "/mcp":
+            self.send_response(404)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "Not found"}).encode())
+            return
+
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            body = self.rfile.read(length).decode("utf-8")
+            msg = json.loads(body)
+        except Exception as e:
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                "jsonrpc": "2.0",
+                "id": None,
+                "error": {"code": -32700, "message": f"Invalid JSON body: {e}"}
+            }).encode())
+            return
+
+        timeout = 45.0 if msg.get("method") == "tools/call" else 30.0
+        response = call_extension_sync(msg, timeout=timeout)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(json.dumps(response).encode())
 
     def log_message(self, format, *args):
         pass  # Suppress default logging

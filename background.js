@@ -317,7 +317,15 @@ async function executeTool(toolName, args) {
         func: (sel) => {
           const el = document.querySelector(sel);
           if (!el) return `Element not found: ${sel}`;
-          el.click();
+          el.scrollIntoView({ behavior: "instant", block: "center" });
+          const rect = el.getBoundingClientRect();
+          const opts = { bubbles: true, cancelable: true, view: window, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 };
+          el.dispatchEvent(new PointerEvent("pointerdown", opts));
+          el.dispatchEvent(new MouseEvent("mousedown", opts));
+          el.dispatchEvent(new PointerEvent("pointerup", opts));
+          el.dispatchEvent(new MouseEvent("mouseup", opts));
+          el.dispatchEvent(new MouseEvent("click", opts));
+          if (typeof el.click === "function") el.click();
           return `Clicked: ${sel}`;
         },
         args: [args.selector]
