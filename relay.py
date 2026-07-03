@@ -249,9 +249,23 @@ class StatusHandler(BaseHTTPRequestHandler):
             "ws_port": WS_PORT,
             "mcp_port": MCP_PORT,
             "tools": [
+                # Browser control
                 "navigate", "screenshot", "get_dom", "click", "type_text",
-                "extract_text", "scroll", "get_tabs", "switch_tab", "close_tab",
-                "evaluate", "get_page_info", "fill_form", "wait", "press_key", "get_links"
+                "extract_text", "scroll", "get_page_info",
+                # Page content
+                "get_links", "get_markdown",
+                # Tabs
+                "get_tabs", "switch_tab", "close_tab", "create_tab", "batch_execute",
+                # Forms
+                "fill_form", "detect_forms", "auto_fill_form", "drag_and_drop",
+                # Recording / playback
+                "start_recording", "stop_recording", "playback",
+                # Debugging
+                "evaluate", "wait", "press_key", "get_console_logs",
+                "get_network_requests", "handle_dialog",
+                # Smart interaction
+                "highlight", "wait_for_element", "get_interactive_elements",
+                "click_by_id", "type_by_id", "click_text", "hover"
             ]
         }
 
