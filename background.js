@@ -437,10 +437,21 @@ async function executeTool(toolName, args) {
 
     case "screenshot": {
       // Ensure the tab is active and visible before capturing.
+      await chrome.tabs.update(tab.id, { active: true });
+      await new Promise(r => setTimeout(r, 150));
+
+      // captureVisibleTab can hang if Chrome is minimized or the graphics
+      // pipeline is blocked. Always resolve/reject within a hard timeout.
+      const captureWithTimeout = (timeoutMs = 6000) => {
+        const capturePromise = chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" });
+        const timeoutPromise = new Promise((_, reject) => {
+          setTimeout(() => reject(new Error(`captureVisibleTab timed out after ${timeoutMs}ms. Ensure Chrome is visible and not minimized.`)), timeoutMs);
+        });
+        return Promise.race([capturePromise, timeoutPromise]);
+      };
+
       try {
-        await chrome.tabs.update(tab.id, { active: true });
-        await new Promise(r => setTimeout(r, 150));
-        const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" });
+        const dataUrl = await captureWithTimeout();
         return {
           content: [
             { type: "text", text: "Screenshot captured" },
@@ -448,29 +459,7 @@ async function executeTool(toolName, args) {
           ]
         };
       } catch (captureErr) {
-        // Fallback for pages where captureVisibleTab is blocked by Chrome policy.
-        // Requires the 'debugger' permission.
-        try {
-          await chrome.debugger.attach({ tabId: tab.id }, "1.3");
-          try {
-            await chrome.debugger.sendCommand({ tabId: tab.id }, "Page.bringToFront", {});
-            const screenshot = await chrome.debugger.sendCommand(
-              { tabId: tab.id },
-              "Page.captureScreenshot",
-              { format: "png" }
-            );
-            return {
-              content: [
-                { type: "text", text: "Screenshot captured (debugger fallback)" },
-                { type: "image", data: screenshot.data, mimeType: "image/png" }
-              ]
-            };
-          } finally {
-            await chrome.debugger.detach({ tabId: tab.id }).catch(() => {});
-          }
-        } catch (debuggerErr) {
-          throw new Error(`Screenshot failed: ${captureErr.message}; debugger fallback also failed: ${debuggerErr.message}`);
-        }
+        return { content: [{ type: "text", text: `Screenshot failed: ${captureErr.message}` }] };
       }
     }
 
