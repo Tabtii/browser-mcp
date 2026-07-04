@@ -259,6 +259,19 @@ class StatusHandler(BaseHTTPRequestHandler):
         with extension_lock:
             connected = extension_client and extension_client.alive
 
+        if self.path == "/license":
+            # Ask the extension for current license status.
+            license_resp = call_extension_sync({
+                "jsonrpc": "2.0", "id": "license-status", "method": "tools/call",
+                "params": {"name": "evaluate", "arguments": {"script": "({valid: typeof proLicenseValid !== 'undefined' ? proLicenseValid : false, key: typeof proLicenseKey !== 'undefined' ? proLicenseKey : null})"}}
+            }, timeout=5.0)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps(license_resp, indent=2).encode())
+            return
+
         status = {
             "name": "browser-mcp",
             "version": VERSION,
