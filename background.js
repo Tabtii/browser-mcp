@@ -34,38 +34,51 @@ let proLicenseKey = null;
 let proLicenseValid = false;
 let proLicenseMeta = null; // { email, customerName, expiresAt, ... }
 let proLicenseLastValidated = 0; // epoch ms
+let licenseLoadPromise = null;
 
-// Load saved license on startup — trust cache if fresh, revalidate if stale
-chrome.storage.local.get(
-  ["proLicenseKey", "proLicenseValid", "proLicenseMeta", "proLicenseLastValidated"],
-  async (result) => {
-    if (!result.proLicenseKey) return;
-    proLicenseKey = result.proLicenseKey;
-    proLicenseMeta = result.proLicenseMeta || null;
-    proLicenseLastValidated = result.proLicenseLastValidated || 0;
-    const stale = Date.now() - proLicenseLastValidated > LICENSE_CACHE_TTL_MS;
-    if (stale) {
-      // Revalidate with LemonSqueezy in the background
-      try {
-        const v = await validateLicenseOnline(proLicenseKey);
-        proLicenseValid = v;
-        proLicenseLastValidated = Date.now();
-        await chrome.storage.local.set({
-          proLicenseValid: v,
-          proLicenseLastValidated: proLicenseLastValidated,
-        });
-        console.log(`[BrowserMCP] License revalidated: ${v ? "Pro ✓" : "Invalid/expired"}`);
-      } catch (e) {
-        // Network error — fall back to cached validity
-        proLicenseValid = !!result.proLicenseValid;
-        console.warn(`[BrowserMCP] Revalidate failed (offline?), using cache: ${proLicenseValid}`);
+function initLicenseLoad() {
+  if (licenseLoadPromise) return licenseLoadPromise;
+  licenseLoadPromise = new Promise((resolve) => {
+    chrome.storage.local.get(
+      ["proLicenseKey", "proLicenseValid", "proLicenseMeta", "proLicenseLastValidated"],
+      async (result) => {
+        if (!result.proLicenseKey) {
+          resolve();
+          return;
+        }
+        proLicenseKey = result.proLicenseKey;
+        proLicenseMeta = result.proLicenseMeta || null;
+        proLicenseLastValidated = result.proLicenseLastValidated || 0;
+        const stale = Date.now() - proLicenseLastValidated > LICENSE_CACHE_TTL_MS;
+        if (stale) {
+          // Revalidate with LemonSqueezy in the background
+          try {
+            const v = await validateLicenseOnline(proLicenseKey);
+            proLicenseValid = v;
+            proLicenseLastValidated = Date.now();
+            await chrome.storage.local.set({
+              proLicenseValid: v,
+              proLicenseLastValidated: proLicenseLastValidated,
+            });
+            console.log(`[BrowserMCP] License revalidated: ${v ? "Pro ✓" : "Invalid/expired"}`);
+          } catch (e) {
+            // Network error — fall back to cached validity
+            proLicenseValid = !!result.proLicenseValid;
+            console.warn(`[BrowserMCP] Revalidate failed (offline?), using cache: ${proLicenseValid}`);
+          }
+        } else {
+          proLicenseValid = !!result.proLicenseValid;
+          console.log(`[BrowserMCP] License loaded from cache: ${proLicenseValid ? "Pro ✓" : "Invalid"}`);
+        }
+        resolve();
       }
-    } else {
-      proLicenseValid = !!result.proLicenseValid;
-      console.log(`[BrowserMCP] License loaded from cache: ${proLicenseValid ? "Pro ✓" : "Invalid"}`);
-    }
-  }
-);
+    );
+  });
+  return licenseLoadPromise;
+}
+
+// Start loading immediately on startup.
+initLicenseLoad();
 
 async function validateLicenseOnline(key) {
   // POST to LemonSqueezy — expects form-encoded body with license_key only.
@@ -119,6 +132,7 @@ async function deactivateLicenseOnline(key) {
 }
 
 async function isProEnabled() {
+  await initLicenseLoad();
   return proLicenseValid;
 }
 
