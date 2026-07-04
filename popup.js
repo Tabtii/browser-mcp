@@ -132,18 +132,21 @@ document.addEventListener("DOMContentLoaded", () => {
 
   if (activateBtn) {
     activateBtn.addEventListener("click", () => {
-      const key = licenseInput.value.trim().toUpperCase();
-      if (!key) {
-        showProError("Please enter a license key");
+      const rawKey = licenseInput.value.trim();
+      if (!rawKey) {
+        showProError("Bitte Lizenzschlüssel eingeben.");
         return;
       }
-      activateBtn.textContent = "Validating...";
-      chrome.runtime.sendMessage({ type: "ACTIVATE_LICENSE", key }, (response) => {
-        if (response && response.valid) {
+      activateBtn.textContent = "Validierung läuft…";
+      activateBtn.disabled = true;
+      chrome.runtime.sendMessage({ type: "ACTIVATE_LICENSE", key: rawKey }, (response) => {
+        activateBtn.disabled = false;
+        if (response && response.ok) {
           showProActive();
         } else {
-          showProError("Invalid license key. Please check and try again.");
-          activateBtn.textContent = "Activate Pro";
+          const msg = (response && response.error) || "Ungültiger Lizenzschlüssel. Bitte prüfen und erneut versuchen.";
+          showProError(msg);
+          activateBtn.textContent = "Pro aktivieren";
         }
       });
     });

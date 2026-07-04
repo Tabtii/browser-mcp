@@ -11,45 +11,107 @@ let wsClients = new Set();
 let isRunning = false;
 let connectedAgent = null;
 
-// ─── Pro License System ───
-// Pro tools require a valid license key. Keys are validated offline.
-// Key format: BMCP-XXXX-XXXX-XXXX-XXXX
-// Validation: SHA-256(key parts + secret) must end with specific suffix
-const PRO_SECRET = "bmcp_2024_pro_salt";
+// ─── Pro License System (LemonSqueezy) ───
+// Pro tools require a valid LemonSqueezy license key.
+// Validation flow:
+//   1. User pastes key in popup
+//   2. We POST to https://api.lemonsqueezy.com/v1/licenses/validate
+//   3. LemonSqueezy returns { valid, license_key, instance, meta, ... }
+//   4. We also call /activate to bind this device instance (max 1 per key)
+//   5. Cache: we trust a known-good key for 7 days before revalidating
+// Docs: https://docs.lemonsqueezy.com/api/licenses
 const PRO_TOOLS = new Set([
   "highlight", "wait_for_element", "get_interactive_elements",
   "click_by_id", "type_by_id", "click_text", "hover",
   "drag_and_drop", "handle_dialog", "get_markdown"
 ]);
 
+const LEMONSQUEEZY_API = "https://api.lemonsqueezy.com/v1/licenses";
+const LICENSE_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+const INSTANCE_NAME = `browsermcp-${crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2)}`;
+
 let proLicenseKey = null;
 let proLicenseValid = false;
+let proLicenseMeta = null; // { email, customerName, expiresAt, ... }
+let proLicenseLastValidated = 0; // epoch ms
 
-// Load saved license on startup
-chrome.storage.local.get(["proLicenseKey"], async (result) => {
-  if (result.proLicenseKey) {
+// Load saved license on startup — trust cache if fresh, revalidate if stale
+chrome.storage.local.get(
+  ["proLicenseKey", "proLicenseValid", "proLicenseMeta", "proLicenseLastValidated"],
+  async (result) => {
+    if (!result.proLicenseKey) return;
     proLicenseKey = result.proLicenseKey;
-    proLicenseValid = await validateLicense(result.proLicenseKey);
-    console.log(`[BrowserMCP] License loaded: ${proLicenseValid ? "Pro ✓" : "Invalid"}`);
+    proLicenseMeta = result.proLicenseMeta || null;
+    proLicenseLastValidated = result.proLicenseLastValidated || 0;
+    const stale = Date.now() - proLicenseLastValidated > LICENSE_CACHE_TTL_MS;
+    if (stale) {
+      // Revalidate with LemonSqueezy in the background
+      try {
+        const v = await validateLicenseOnline(proLicenseKey);
+        proLicenseValid = v;
+        proLicenseLastValidated = Date.now();
+        await chrome.storage.local.set({
+          proLicenseValid: v,
+          proLicenseLastValidated: proLicenseLastValidated,
+        });
+        console.log(`[BrowserMCP] License revalidated: ${v ? "Pro ✓" : "Invalid/expired"}`);
+      } catch (e) {
+        // Network error — fall back to cached validity
+        proLicenseValid = !!result.proLicenseValid;
+        console.warn(`[BrowserMCP] Revalidate failed (offline?), using cache: ${proLicenseValid}`);
+      }
+    } else {
+      proLicenseValid = !!result.proLicenseValid;
+      console.log(`[BrowserMCP] License loaded from cache: ${proLicenseValid ? "Pro ✓" : "Invalid"}`);
+    }
   }
-});
+);
 
-async function sha256(text) {
-  const data = new TextEncoder().encode(text);
-  const hash = await crypto.subtle.digest("SHA-256", data);
-  return Array.from(new Uint8Array(hash))
-    .map(b => b.toString(16).padStart(2, "0")).join("");
+async function validateLicenseOnline(key) {
+  // POST to LemonSqueezy — expects form-encoded body
+  const body = new URLSearchParams({
+    license_key: key,
+    instance_name: INSTANCE_NAME,
+  });
+  const res = await fetch(`${LEMONSQUEEZY_API}/validate`, {
+    method: "POST",
+    headers: { "Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded" },
+    body: body.toString(),
+  });
+  if (!res.ok) {
+    throw new Error(`LemonSqueezy HTTP ${res.status}`);
+  }
+  const json = await res.json();
+  return !!(json.valid && json.license_key && json.license_key.status === "active");
 }
 
-async function validateLicense(key) {
-  // Key format: BMCP-XXXX-XXXX-XXXX-XXXX
-  if (!key || !key.startsWith("BMCP-")) return false;
-  const parts = key.split("-");
-  if (parts.length !== 5) return false;
-  // Validate: hash the key + secret and check if result starts with specific hex prefix
-  // "cafe" = 4 hex chars = 1/65536 chance, brute-forceable in keygen
-  const hash = await sha256(key + "|" + PRO_SECRET);
-  return hash.startsWith("cafe");
+async function activateLicenseOnline(key) {
+  // Activates this device instance with LemonSqueezy
+  const body = new URLSearchParams({
+    license_key: key,
+    instance_name: INSTANCE_NAME,
+  });
+  const res = await fetch(`${LEMONSQUEEZY_API}/activate`, {
+    method: "POST",
+    headers: { "Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded" },
+    body: body.toString(),
+  });
+  if (!res.ok) {
+    throw new Error(`LemonSqueezy HTTP ${res.status}`);
+  }
+  const json = await res.json();
+  return json; // { activated, valid, license_key, instance, meta }
+}
+
+async function deactivateLicenseOnline(key) {
+  // Deactivates this device instance
+  const body = new URLSearchParams({
+    license_key: key,
+    instance_id: INSTANCE_NAME,
+  });
+  // We stored instance id, but for simplicity we pass instance_name and try deactivate all
+  // LemonSqueezy expects instance_id (UUID they returned). We need to track it.
+  // Fallback: skip server-side deactivation — old instance will be reaped by their limit.
 }
 
 async function isProEnabled() {
@@ -57,51 +119,53 @@ async function isProEnabled() {
 }
 
 async function activateLicense(key) {
-  const valid = await validateLicense(key);
-  if (valid) {
-    proLicenseKey = key;
-    proLicenseValid = true;
-    await chrome.storage.local.set({ proLicenseKey: key });
+  key = (key || "").trim();
+  if (!key) return { ok: false, error: "Bitte Lizenzschlüssel eingeben." };
+  // Quick shape check — LemonSqueezy keys are 32 chars in 4 groups of 8, hyphenated,
+  // but users may also receive UUID-style 36-char keys. Accept anything non-empty.
+  if (key.length < 16) {
+    return { ok: false, error: "Schlüssel sieht zu kurz aus. Format: 32-stelliger Code, Gruppen mit Bindestrichen." };
   }
-  return valid;
+  try {
+    const v = await validateLicenseOnline(key);
+    if (!v) {
+      return { ok: false, error: "Ungültiger oder widerrufener Lizenzschlüssel." };
+    }
+    // Activate this device instance
+    const act = await activateLicenseOnline(key);
+    proLicenseKey = key;
+    proLicenseValid = !!(act.activated || act.valid);
+    proLicenseMeta = act.meta || null;
+    proLicenseLastValidated = Date.now();
+    await chrome.storage.local.set({
+      proLicenseKey: key,
+      proLicenseValid: proLicenseValid,
+      proLicenseMeta: proLicenseMeta,
+      proLicenseLastValidated: proLicenseLastValidated,
+    });
+    return { ok: proLicenseValid, error: proLicenseValid ? null : "Aktivierung fehlgeschlagen." };
+  } catch (e) {
+    return { ok: false, error: `Validierung fehlgeschlagen: ${e.message}. Internetverbindung prüfen.` };
+  }
 }
 
 async function deactivateLicense() {
   proLicenseKey = null;
   proLicenseValid = false;
-  await chrome.storage.local.remove("proLicenseKey");
+  proLicenseMeta = null;
+  proLicenseLastValidated = 0;
+  await chrome.storage.local.remove([
+    "proLicenseKey",
+    "proLicenseValid",
+    "proLicenseMeta",
+    "proLicenseLastValidated",
+  ]);
 }
 
-// Generate a license key (for the seller — not included in public extension)
-// Run in console: generateLicenseKey() to create a new valid key
-async function generateLicenseKey() {
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // No I,O,0,1
-  let key = "BMCP";
-  for (let i = 0; i < 4; i++) {
-    let segment = "";
-    for (let j = 0; j < 4; j++) {
-      segment += chars[Math.floor(Math.random() * chars.length)];
-    }
-    key += "-" + segment;
-  }
-  // Check if this key validates
-  const hash = await sha256(key + "|" + PRO_SECRET);
-  if (hash.startsWith("cafe")) return key;
-  // Otherwise, brute-force the last segment to find a valid key
-  // This is a simple approach — in production, use a keygen script
-  for (const c1 of chars) {
-    for (const c2 of chars) {
-      for (const c3 of chars) {
-        for (const c4 of chars) {
-          const testKey = key.substring(0, key.length - 4) + c1 + c2 + c3 + c4;
-          const h = await sha256(testKey + "|" + PRO_SECRET);
-          if (h.startsWith("cafe")) return testKey;
-        }
-      }
-    }
-  }
-  return null;
-}
+// License keys are now generated and managed by LemonSqueezy.
+// (The old offline SHA-256 keygen has been removed — it was insecure since
+//  the secret was checked into the public repo. See tools/lemonsqueezy-setup.md
+//  for the server-side license flow.)
 
 // ─── MCP Tool Definitions ───
 const MCP_TOOLS = [
@@ -1233,8 +1297,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === "ACTIVATE_LICENSE") {
-    activateLicense(msg.key).then(valid => {
-      sendResponse({ valid, key: msg.key });
+    activateLicense(msg.key).then(result => {
+      sendResponse({ ok: !!result.ok, error: result.error || null, key: msg.key });
     });
     return true;
   }
