@@ -436,13 +436,42 @@ async function executeTool(toolName, args) {
     }
 
     case "screenshot": {
-      const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" });
-      return {
-        content: [
-          { type: "text", text: "Screenshot captured" },
-          { type: "image", data: dataUrl.split(",")[1], mimeType: "image/png" }
-        ]
-      };
+      // Ensure the tab is active and visible before capturing.
+      try {
+        await chrome.tabs.update(tab.id, { active: true });
+        await new Promise(r => setTimeout(r, 150));
+        const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" });
+        return {
+          content: [
+            { type: "text", text: "Screenshot captured" },
+            { type: "image", data: dataUrl.split(",")[1], mimeType: "image/png" }
+          ]
+        };
+      } catch (captureErr) {
+        // Fallback for pages where captureVisibleTab is blocked by Chrome policy.
+        // Requires the 'debugger' permission.
+        try {
+          await chrome.debugger.attach({ tabId: tab.id }, "1.3");
+          try {
+            await chrome.debugger.sendCommand({ tabId: tab.id }, "Page.bringToFront", {});
+            const screenshot = await chrome.debugger.sendCommand(
+              { tabId: tab.id },
+              "Page.captureScreenshot",
+              { format: "png" }
+            );
+            return {
+              content: [
+                { type: "text", text: "Screenshot captured (debugger fallback)" },
+                { type: "image", data: screenshot.data, mimeType: "image/png" }
+              ]
+            };
+          } finally {
+            await chrome.debugger.detach({ tabId: tab.id }).catch(() => {});
+          }
+        } catch (debuggerErr) {
+          throw new Error(`Screenshot failed: ${captureErr.message}; debugger fallback also failed: ${debuggerErr.message}`);
+        }
+      }
     }
 
     case "get_dom": {
@@ -486,9 +515,21 @@ async function executeTool(toolName, args) {
 
     case "click": {
       const results = await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
+        target: { tabId: tab.id, allFrames: true },
         func: (sel) => {
-          const el = document.querySelector(sel);
+          // Try main document first, then all frames.
+          function findElement(root) {
+            return root.querySelector(sel);
+          }
+          let el = findElement(document);
+          if (!el) {
+            for (const frame of document.querySelectorAll("iframe, frame")) {
+              try {
+                el = frame.contentDocument?.querySelector(sel);
+                if (el) break;
+              } catch (e) {}
+            }
+          }
           if (!el) return `Element not found: ${sel}`;
           el.scrollIntoView({ behavior: "instant", block: "center" });
           const rect = el.getBoundingClientRect();
@@ -508,17 +549,61 @@ async function executeTool(toolName, args) {
 
     case "type_text": {
       const results = await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
+        target: { tabId: tab.id, allFrames: true },
         func: (sel, text) => {
-          const el = document.querySelector(sel);
+          function findElement(root) {
+            return root.querySelector(sel);
+          }
+          let el = findElement(document);
+          if (!el) {
+            for (const frame of document.querySelectorAll("iframe, frame")) {
+              try {
+                el = frame.contentDocument?.querySelector(sel);
+                if (el) break;
+              } catch (e) {}
+            }
+          }
           if (!el) return `Element not found: ${sel}`;
           el.focus();
           el.value = text;
           el.dispatchEvent(new Event("input", { bubbles: true }));
           el.dispatchEvent(new Event("change", { bubbles: true }));
+          // Also dispatch a keyboard input event for React-controlled inputs.
+          el.dispatchEvent(new InputEvent("input", { bubbles: true, data: text, inputType: "insertText" }));
           return `Typed "${text}" into ${sel}`;
         },
         args: [args.selector, args.text]
+      });
+      return { content: [{ type: "text", text: results[0]?.result }] };
+    }
+
+    case "click_text": {
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: tab.id, allFrames: true },
+        func: (targetText) => {
+          const normalize = (s) => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim();
+          const needle = normalize(targetText);
+          const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT, null, false);
+          let el;
+          while ((el = walker.nextNode())) {
+            if (el.children.length > 0) continue; // only leaf-ish elements
+            const text = normalize(el.textContent || "");
+            if (text === needle || text.includes(needle)) {
+              el.scrollIntoView({ behavior: "instant", block: "center" });
+              const rect = el.getBoundingClientRect();
+              const opts = { bubbles: true, cancelable: true, view: window, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 };
+              el.dispatchEvent(new PointerEvent("pointerdown", opts));
+              el.dispatchEvent(new MouseEvent("mousedown", opts));
+              el.dispatchEvent(new PointerEvent("pointerup", opts));
+              el.dispatchEvent(new MouseEvent("mouseup", opts));
+              el.dispatchEvent(new MouseEvent("click", opts));
+              if (typeof el.click === "function") el.click();
+              return `Clicked text: "${targetText}"`;
+            }
+          }
+          return `No element found with text: "${targetText}"`;
+        },
+        args: [args.text]
       });
       return { content: [{ type: "text", text: results[0]?.result }] };
     }
@@ -554,13 +639,21 @@ async function executeTool(toolName, args) {
     }
 
     case "switch_tab": {
-      await chrome.tabs.update(args.tabId, { active: true });
-      return { content: [{ type: "text", text: `Switched to tab ${args.tabId}` }] };
+      const targetTabId = args.tabId ?? args.id;
+      if (targetTabId == null) {
+        return { content: [{ type: "text", text: "Error: missing tabId or id argument" }] };
+      }
+      await chrome.tabs.update(targetTabId, { active: true });
+      return { content: [{ type: "text", text: `Switched to tab ${targetTabId}` }] };
     }
 
     case "close_tab": {
-      await chrome.tabs.remove(args.tabId);
-      return { content: [{ type: "text", text: `Closed tab ${args.tabId}` }] };
+      const closeTabId = args.tabId ?? args.id;
+      if (closeTabId == null) {
+        return { content: [{ type: "text", text: "Error: missing tabId or id argument" }] };
+      }
+      await chrome.tabs.remove(closeTabId);
+      return { content: [{ type: "text", text: `Closed tab ${closeTabId}` }] };
     }
 
     case "evaluate": {
@@ -602,16 +695,28 @@ async function executeTool(toolName, args) {
 
     case "fill_form": {
       const results = await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
+        target: { tabId: tab.id, allFrames: true },
         func: (fields) => {
           const results = [];
           for (const [sel, val] of Object.entries(fields)) {
-            const el = document.querySelector(sel);
+            function findElement(root) {
+              return root.querySelector(sel);
+            }
+            let el = findElement(document);
+            if (!el) {
+              for (const frame of document.querySelectorAll("iframe, frame")) {
+                try {
+                  el = frame.contentDocument?.querySelector(sel);
+                  if (el) break;
+                } catch (e) {}
+              }
+            }
             if (!el) { results.push(`${sel}: not found`); continue; }
             el.focus();
             el.value = val;
             el.dispatchEvent(new Event("input", { bubbles: true }));
             el.dispatchEvent(new Event("change", { bubbles: true }));
+            el.dispatchEvent(new InputEvent("input", { bubbles: true, data: val, inputType: "insertText" }));
             results.push(`${sel}: filled`);
           }
           return results.join("\n");
@@ -655,24 +760,83 @@ async function executeTool(toolName, args) {
     // ─── Recording / Playback ───
     case "start_recording": {
       recordingState = { isRecording: true, actions: [], recordingTabId: tab.id };
-      // Inject recording listener
+      // Inject recording listener. We record clicks, inputs, and keydowns.
+      // The listener sends actions back to the service worker via a named global
+      // that stop_recording can read, and also attempts runtime.sendMessage.
       await chrome.scripting.executeScript({
         target: { tabId: tab.id },
         func: () => {
-          if (window.__browserMcpRecording) return;
+          if (window.__browserMcpRecording) return "already recording";
           window.__browserMcpRecording = true;
           window.__browserMcpActions = [];
-          document.addEventListener("click", (e) => {
-            const el = e.target;
-            const selector = el.id ? `#${el.id}` : el.className ? `${el.tagName.toLowerCase()}.${String(el.className).split(" ")[0]}` : el.tagName.toLowerCase();
-            window.__browserMcpActions.push({ type: "click", selector, timestamp: Date.now() });
-          }, true);
-          document.addEventListener("input", (e) => {
-            const el = e.target;
-            if (!el.value) return;
-            const selector = el.id ? `#${el.id}` : el.name ? `[name="${el.name}"]` : el.tagName.toLowerCase();
-            window.__browserMcpActions.push({ type: "type", selector, text: el.value, timestamp: Date.now() });
-          }, true);
+
+          function pushAction(action) {
+            window.__browserMcpActions.push(action);
+            // Best-effort live forwarding to service worker (may fail if extension reloaded)
+            try {
+              if (typeof chrome !== "undefined" && chrome.runtime?.sendMessage) {
+                chrome.runtime.sendMessage({ type: "RECORDING_ACTION", action }).catch(() => {});
+              }
+            } catch (e) {}
+          }
+
+          function selectorFor(el) {
+            if (!el) return "";
+            if (el.id) return `#${el.id}`;
+            if (el.name) return `${el.tagName.toLowerCase()}[name="${el.name}"]`;
+            if (el.className) {
+              const cls = String(el.className).split(" ").filter(c => c).slice(0, 2).join(".");
+              if (cls) return `${el.tagName.toLowerCase()}.${cls}`;
+            }
+            return el.tagName.toLowerCase();
+          }
+
+          const clickHandler = (e) => {
+            pushAction({
+              type: "click",
+              selector: selectorFor(e.target),
+              tag: e.target?.tagName?.toLowerCase() || "",
+              text: (e.target?.textContent || "").trim().substring(0, 40),
+              timestamp: Date.now()
+            });
+          };
+
+          const inputHandler = (e) => {
+            const target = e.target;
+            if (!target?.value && target?.value !== "") return;
+            pushAction({
+              type: "type",
+              selector: selectorFor(target),
+              text: String(target.value || "").substring(0, 200),
+              tag: target?.tagName?.toLowerCase() || "",
+              timestamp: Date.now()
+            });
+          };
+
+          const keyHandler = (e) => {
+            pushAction({
+              type: "key",
+              key: e.key,
+              selector: selectorFor(e.target),
+              timestamp: Date.now()
+            });
+          };
+
+          document.addEventListener("click", clickHandler, true);
+          document.addEventListener("input", inputHandler, true);
+          document.addEventListener("keydown", keyHandler, true);
+
+          window.__browserMcpStopRecording = () => {
+            document.removeEventListener("click", clickHandler, true);
+            document.removeEventListener("input", inputHandler, true);
+            document.removeEventListener("keydown", keyHandler, true);
+            window.__browserMcpRecording = false;
+            const actions = window.__browserMcpActions || [];
+            window.__browserMcpActions = [];
+            return actions;
+          };
+
+          return "recording started";
         }
       });
       return { content: [{ type: "text", text: "Recording started. Interact with the page — actions are being captured." }] };
@@ -682,18 +846,22 @@ async function executeTool(toolName, args) {
       if (!recordingState.isRecording) {
         return { content: [{ type: "text", text: "Not recording." }] };
       }
-      // Collect recorded actions from the page
       const results = await chrome.scripting.executeScript({
         target: { tabId: recordingState.recordingTabId || tab.id },
         func: () => {
+          if (typeof window.__browserMcpStopRecording === "function") {
+            const actions = window.__browserMcpStopRecording();
+            return { stopped: true, actions };
+          }
           const actions = window.__browserMcpActions || [];
           window.__browserMcpRecording = false;
           window.__browserMcpActions = [];
-          return actions;
+          return { stopped: false, actions };
         }
       });
-      const actions = results[0]?.result || [];
+      const data = results[0]?.result || { actions: [] };
       recordingState.isRecording = false;
+      const actions = data.actions || [];
       return { content: [{ type: "text", text: JSON.stringify({ recorded: actions.length, actions }, null, 2) }] };
     }
 
@@ -1297,6 +1465,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // ─── Pro License Messages ───
   if (msg.type === "GET_LICENSE_STATUS") {
     sendResponse({ valid: proLicenseValid, key: proLicenseKey });
+    return false;
+  }
+
+  if (msg.type === "RECORDING_ACTION") {
+    if (recordingState.isRecording) {
+      recordingState.actions.push(msg.action);
+    }
+    sendResponse({ ok: true });
     return false;
   }
 
