@@ -444,50 +444,26 @@ async function executeTool(toolName, args) {
     }
 
     case "screenshot": {
-      // Use chrome.debugger because captureVisibleTab can hang indefinitely
-      // when the Chrome window is minimized or not fully visible.
-      return new Promise(async (resolve) => {
-        const timeoutMs = 6000;
-        let timer;
-
-        try {
-          await chrome.tabs.update(tab.id, { active: true });
-          await new Promise(r => setTimeout(r, 250));
-
-          timer = setTimeout(() => {
-            chrome.debugger.detach({ tabId: tab.id }).catch(() => {});
-            resolve({ content: [{ type: "text", text: `Screenshot failed: timeout after ${timeoutMs}ms. Ensure the Chrome window is visible and focused.` }] });
-          }, timeoutMs);
-
-          chrome.debugger.attach({ tabId: tab.id }, "1.3", () => {
-            if (chrome.runtime.lastError) {
-              clearTimeout(timer);
-              resolve({ content: [{ type: "text", text: `Screenshot failed: ${chrome.runtime.lastError.message}` }] });
-              return;
-            }
-            chrome.debugger.sendCommand({ tabId: tab.id }, "Page.bringToFront", {}, () => {
-              chrome.debugger.sendCommand({ tabId: tab.id }, "Page.captureScreenshot", { format: "png", quality: 90 }, (result) => {
-                clearTimeout(timer);
-                chrome.debugger.detach({ tabId: tab.id }).catch(() => {});
-                if (chrome.runtime.lastError || !result || !result.data) {
-                  const msg = chrome.runtime.lastError?.message || "no image data";
-                  resolve({ content: [{ type: "text", text: `Screenshot failed: ${msg}` }] });
-                } else {
-                  resolve({
-                    content: [
-                      { type: "text", text: "Screenshot captured" },
-                      { type: "image", data: result.data, mimeType: "image/png" }
-                    ]
-                  });
-                }
-              });
-            });
-          });
-        } catch (e) {
-          clearTimeout(timer);
-          resolve({ content: [{ type: "text", text: `Screenshot failed: ${e.message}` }] });
-        }
-      });
+      // captureVisibleTab is the official screenshot API. It can, however,
+      // hang indefinitely if the Chrome window is minimized or the compositor
+      // is blocked. We therefore attach a hard timeout and return a helpful
+      // error instead of leaving the agent waiting.
+      const timeoutMs = 3000;
+      try {
+        await chrome.tabs.update(tab.id, { active: true });
+        const dataUrl = await Promise.race([
+          chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" }),
+          new Promise((_, reject) => setTimeout(() => reject(new Error(`captureVisibleTab timed out after ${timeoutMs}ms — make sure the Chrome window is visible and focused.`)), timeoutMs))
+        ]);
+        return {
+          content: [
+            { type: "text", text: "Screenshot captured" },
+            { type: "image", data: dataUrl.split(",")[1], mimeType: "image/png" }
+          ]
+        };
+      } catch (e) {
+        return { content: [{ type: "text", text: `Screenshot failed: ${e.message}` }] };
+      }
     }
 
     case "get_dom": {
