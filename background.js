@@ -450,31 +450,50 @@ async function executeTool(toolName, args) {
     }
 
     case "screenshot": {
-      // Ensure the tab is active and visible before capturing.
-      await chrome.tabs.update(tab.id, { active: true });
-      await new Promise(r => setTimeout(r, 150));
+      // Use chrome.debugger because captureVisibleTab can hang indefinitely
+      // when the Chrome window is minimized or not fully visible.
+      return new Promise(async (resolve) => {
+        const timeoutMs = 6000;
+        let timer;
 
-      // captureVisibleTab can hang if Chrome is minimized or the graphics
-      // pipeline is blocked. Always resolve/reject within a hard timeout.
-      const captureWithTimeout = (timeoutMs = 6000) => {
-        const capturePromise = chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" });
-        const timeoutPromise = new Promise((_, reject) => {
-          setTimeout(() => reject(new Error(`captureVisibleTab timed out after ${timeoutMs}ms. Ensure Chrome is visible and not minimized.`)), timeoutMs);
-        });
-        return Promise.race([capturePromise, timeoutPromise]);
-      };
+        try {
+          await chrome.tabs.update(tab.id, { active: true });
+          await new Promise(r => setTimeout(r, 250));
 
-      try {
-        const dataUrl = await captureWithTimeout();
-        return {
-          content: [
-            { type: "text", text: "Screenshot captured" },
-            { type: "image", data: dataUrl.split(",")[1], mimeType: "image/png" }
-          ]
-        };
-      } catch (captureErr) {
-        return { content: [{ type: "text", text: `Screenshot failed: ${captureErr.message}` }] };
-      }
+          timer = setTimeout(() => {
+            chrome.debugger.detach({ tabId: tab.id }).catch(() => {});
+            resolve({ content: [{ type: "text", text: `Screenshot failed: timeout after ${timeoutMs}ms. Ensure the Chrome window is visible and focused.` }] });
+          }, timeoutMs);
+
+          chrome.debugger.attach({ tabId: tab.id }, "1.3", () => {
+            if (chrome.runtime.lastError) {
+              clearTimeout(timer);
+              resolve({ content: [{ type: "text", text: `Screenshot failed: ${chrome.runtime.lastError.message}` }] });
+              return;
+            }
+            chrome.debugger.sendCommand({ tabId: tab.id }, "Page.bringToFront", {}, () => {
+              chrome.debugger.sendCommand({ tabId: tab.id }, "Page.captureScreenshot", { format: "png", quality: 90 }, (result) => {
+                clearTimeout(timer);
+                chrome.debugger.detach({ tabId: tab.id }).catch(() => {});
+                if (chrome.runtime.lastError || !result || !result.data) {
+                  const msg = chrome.runtime.lastError?.message || "no image data";
+                  resolve({ content: [{ type: "text", text: `Screenshot failed: ${msg}` }] });
+                } else {
+                  resolve({
+                    content: [
+                      { type: "text", text: "Screenshot captured" },
+                      { type: "image", data: result.data, mimeType: "image/png" }
+                    ]
+                  });
+                }
+              });
+            });
+          });
+        } catch (e) {
+          clearTimeout(timer);
+          resolve({ content: [{ type: "text", text: `Screenshot failed: ${e.message}` }] });
+        }
+      });
     }
 
     case "get_dom": {

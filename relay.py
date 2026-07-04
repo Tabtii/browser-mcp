@@ -263,7 +263,7 @@ class StatusHandler(BaseHTTPRequestHandler):
             # Ask the extension for current license status.
             license_resp = call_extension_sync({
                 "jsonrpc": "2.0", "id": "license-status", "method": "tools/call",
-                "params": {"name": "evaluate", "arguments": {"script": "({valid: typeof proLicenseValid !== 'undefined' ? proLicenseValid : false, key: typeof proLicenseKey !== 'undefined' ? proLicenseKey : null})"}}
+                "params": {"name": "evaluate", "arguments": {"script": "JSON.stringify({valid: typeof proLicenseValid !== 'undefined' ? proLicenseValid : false, key: typeof proLicenseKey !== 'undefined' ? proLicenseKey : null, hasStorage: !!chrome.storage})"}}
             }, timeout=5.0)
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -329,7 +329,7 @@ class StatusHandler(BaseHTTPRequestHandler):
             }).encode())
             return
 
-        timeout = 45.0 if msg.get("method") == "tools/call" else 30.0
+        timeout = 30.0 if msg.get("method") == "tools/call" else 30.0
         response = call_extension_sync(msg, timeout=timeout)
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
