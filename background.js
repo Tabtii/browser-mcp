@@ -81,13 +81,11 @@ function initLicenseLoad() {
 initLicenseLoad();
 
 async function validateLicenseOnline(key) {
-  // POST to LemonSqueezy — expects form-encoded body with license_key only.
-  // Do NOT send instance_name here; /validate only checks key validity.
-  const body = new URLSearchParams({ license_key: key });
+  // POST to LemonSqueezy — JSON body with license_key.
   const res = await fetch(`${LEMONSQUEEZY_API}/validate`, {
     method: "POST",
-    headers: { "Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded" },
-    body: body.toString(),
+    headers: { "Accept": "application/json", "Content-Type": "application/json" },
+    body: JSON.stringify({ license_key: key }),
   });
   const json = await res.json().catch(() => ({}));
   console.log("[BrowserMCP] validate response:", JSON.stringify(json).slice(0, 300));
@@ -104,14 +102,10 @@ async function validateLicenseOnline(key) {
 
 async function activateLicenseOnline(key) {
   // Activates this device instance with LemonSqueezy
-  const body = new URLSearchParams({
-    license_key: key,
-    instance_name: INSTANCE_NAME,
-  });
   const res = await fetch(`${LEMONSQUEEZY_API}/activate`, {
     method: "POST",
-    headers: { "Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded" },
-    body: body.toString(),
+    headers: { "Accept": "application/json", "Content-Type": "application/json" },
+    body: JSON.stringify({ license_key: key, instance_name: INSTANCE_NAME }),
   });
   if (!res.ok) {
     throw new Error(`LemonSqueezy HTTP ${res.status}`);
