@@ -451,6 +451,12 @@ async function executeTool(toolName, args) {
       const timeoutMs = 3000;
       try {
         await chrome.tabs.update(tab.id, { active: true });
+        // Attempt to bring the Chrome window to the foreground (best-effort).
+        if (chrome.windows?.update) {
+          try {
+            await chrome.windows.update(tab.windowId, { focused: true });
+          } catch (e) {}
+        }
         const dataUrl = await Promise.race([
           chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" }),
           new Promise((_, reject) => setTimeout(() => reject(new Error(`captureVisibleTab timed out after ${timeoutMs}ms — make sure the Chrome window is visible and focused.`)), timeoutMs))
@@ -536,6 +542,9 @@ async function executeTool(toolName, args) {
         },
         args: [args.selector]
       });
+      if (recordingState.isRecording) {
+        recordingState.actions.push({ type: "click", selector: args.selector, timestamp: Date.now() });
+      }
       return { content: [{ type: "text", text: results[0]?.result }] };
     }
 
@@ -566,6 +575,9 @@ async function executeTool(toolName, args) {
         },
         args: [args.selector, args.text]
       });
+      if (recordingState.isRecording) {
+        recordingState.actions.push({ type: "type", selector: args.selector, text: args.text, timestamp: Date.now() });
+      }
       return { content: [{ type: "text", text: results[0]?.result }] };
     }
 
@@ -733,6 +745,9 @@ async function executeTool(toolName, args) {
         },
         args: [args.key]
       });
+      if (recordingState.isRecording) {
+        recordingState.actions.push({ type: "key", key: args.key, timestamp: Date.now() });
+      }
       return { content: [{ type: "text", text: results[0]?.result }] };
     }
 
@@ -853,8 +868,21 @@ async function executeTool(toolName, args) {
       });
       const data = results[0]?.result || { actions: [] };
       recordingState.isRecording = false;
-      const actions = data.actions || [];
-      return { content: [{ type: "text", text: JSON.stringify({ recorded: actions.length, actions }, null, 2) }] };
+      // Merge service-worker recorded actions (from our own tools) with content-script captured actions.
+      const contentActions = data.actions || [];
+      const allActions = [...recordingState.actions || [], ...contentActions];
+      // Deduplicate by timestamp (1ms resolution)
+      const seen = new Set();
+      const deduped = [];
+      for (const a of allActions) {
+        const key = `${a.type}:${a.selector || a.key || a.text}:${a.timestamp}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        deduped.push(a);
+      }
+      recordingState.actions = [];
+      deduped.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+      return { content: [{ type: "text", text: JSON.stringify({ recorded: deduped.length, actions: deduped }, null, 2) }] };
     }
 
     case "playback": {

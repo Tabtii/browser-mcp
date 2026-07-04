@@ -9,7 +9,8 @@
     "scripting",
     "storage",
     "debugger",
-    "offscreen"
+    "offscreen",
+    "windows"
   ],
   "host_permissions": ["<all_urls>"],
   "background": {
