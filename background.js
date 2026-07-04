@@ -68,21 +68,25 @@ chrome.storage.local.get(
 );
 
 async function validateLicenseOnline(key) {
-  // POST to LemonSqueezy — expects form-encoded body
-  const body = new URLSearchParams({
-    license_key: key,
-    instance_name: INSTANCE_NAME,
-  });
+  // POST to LemonSqueezy — expects form-encoded body with license_key only.
+  // Do NOT send instance_name here; /validate only checks key validity.
+  const body = new URLSearchParams({ license_key: key });
   const res = await fetch(`${LEMONSQUEEZY_API}/validate`, {
     method: "POST",
     headers: { "Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded" },
     body: body.toString(),
   });
+  const json = await res.json().catch(() => ({}));
+  console.log("[BrowserMCP] validate response:", JSON.stringify(json).slice(0, 300));
   if (!res.ok) {
-    throw new Error(`LemonSqueezy HTTP ${res.status}`);
+    const msg = json.errors?.[0]?.detail || json.message || `LemonSqueezy HTTP ${res.status}`;
+    throw new Error(msg);
   }
-  const json = await res.json();
-  return !!(json.valid && json.license_key && json.license_key.status === "active");
+  // Accept both { valid: true } and nested license_key.status === "active".
+  const status = json.license_key?.status;
+  const keyValid = !!json.valid;
+  const statusOk = !status || status === "active" || status === "inactive" || status === "trial";
+  return keyValid && statusOk;
 }
 
 async function activateLicenseOnline(key) {
